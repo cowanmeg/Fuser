@@ -20,7 +20,8 @@ static constexpr DeviceIdxType root = 0;
 static constexpr int tensor_size = 1024;
 static constexpr int number_of_repetitions = 8;
 
-TEST_F(MultiDeviceTest, Communication_Gather) {
+
+ void gather_test(Communicator& comm) {
   if (!comm.is_available() || comm.size() < 2) {
     GTEST_SKIP() << "This test needs at least 2 ranks";
   }
@@ -67,7 +68,7 @@ TEST_F(MultiDeviceTest, Communication_Gather) {
   comm.barrier();
 }
 
-TEST_F(MultiDeviceTest, Communication_Allgather) {
+void allgather_test(Communicator& comm) {
   if (!comm.is_available() || comm.size() < 2) {
     GTEST_SKIP() << "This test needs at least 2 ranks";
   }
@@ -109,7 +110,7 @@ TEST_F(MultiDeviceTest, Communication_Allgather) {
   comm.barrier();
 }
 
-TEST_F(MultiDeviceTest, Communication_Scatter) {
+void scatter_test(Communicator& comm) {
   if (!comm.is_available() || comm.size() < 2) {
     GTEST_SKIP() << "This test needs at least 2 ranks";
   }
@@ -152,7 +153,7 @@ TEST_F(MultiDeviceTest, Communication_Scatter) {
   comm.barrier();
 }
 
-TEST_F(MultiDeviceTest, Communication_Broadcast) {
+void broadcast_test(Communicator& comm) {
   if (!comm.is_available()) {
     GTEST_SKIP() << "This test needs distributed setting";
   }
@@ -195,7 +196,7 @@ TEST_F(MultiDeviceTest, Communication_Broadcast) {
   comm.barrier();
 }
 
-TEST_F(MultiDeviceTest, Communication_SendRecv) {
+void sendrecv_test(Communicator& comm) {
   DeviceIdxType sender = 0;
   DeviceIdxType receiver = 1;
   if (!comm.is_available() || comm.size() < 2) {
@@ -244,7 +245,7 @@ TEST_F(MultiDeviceTest, Communication_SendRecv) {
   comm.barrier();
 }
 
-TEST_F(MultiDeviceTest, Communication_SendRecvToSelf) {
+void sendrecvtoself_test(Communicator& comm) {
   DeviceIdxType sender = 0;
   if (!comm.is_available()) {
     GTEST_SKIP() << "This test needs distributed setting";
@@ -281,6 +282,44 @@ TEST_F(MultiDeviceTest, Communication_SendRecvToSelf) {
         obtained);
   }
   comm.barrier();
+}
+
+TEST_F(MultiDeviceTest, Communication_Gather) {
+  gather_test(get_communicator());
+}
+TEST_F(MultiDeviceTest, Communication_Allgather) {
+  allgather_test(get_communicator());
+}
+TEST_F(MultiDeviceTest, Communication_Scatter) {
+  scatter_test(get_communicator());
+}
+TEST_F(MultiDeviceTest, Communication_Broadcast) {
+  broadcast_test(get_communicator());
+}
+TEST_F(MultiDeviceTest, Communication_SendRecv) {
+  sendrecv_test(get_communicator());
+}
+TEST_F(MultiDeviceTest, Communication_SendRecvToSelf) {
+  sendrecvtoself_test(get_communicator());
+}
+
+TEST_F(UCCMultiDeviceTest, Communication_Gather) {
+  gather_test(get_communicator());
+}
+TEST_F(UCCMultiDeviceTest, Communication_Allgather) {
+  allgather_test(get_communicator());
+}
+// TEST_F(UCCMultiDeviceTest, Communication_Scatter) {
+//   scatter_test(get_communicator());
+// }
+TEST_F(UCCMultiDeviceTest, Communication_Broadcast) {
+  broadcast_test(get_communicator());
+}
+TEST_F(UCCMultiDeviceTest, Communication_SendRecv) {
+  sendrecv_test(get_communicator());
+}
+TEST_F(UCCMultiDeviceTest, Communication_SendRecvToSelf) {
+  sendrecvtoself_test(get_communicator());
 }
 
 } // namespace nvfuser

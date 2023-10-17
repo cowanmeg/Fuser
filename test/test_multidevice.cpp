@@ -52,7 +52,9 @@ namespace nvfuser {
 using namespace torch::jit::fuser::cuda;
 using namespace at::indexing;
 
-Communicator MultiDeviceTest::comm = {};
+// Communicator MultiDeviceTest::comm = {};
+Communicator* MultiDeviceTest::comm = nullptr;
+Communicator* UCCMultiDeviceTest::ucomm = nullptr;
 
 // utility function for validation
 void testValidateMultidevice(
@@ -211,6 +213,7 @@ TEST_F(MultiDeviceTest, Pipeline) {
   // ===========================================================
 
   int requested_world_size = 6;
+  Communicator& comm = get_communicator();
   if (!comm.is_available() || comm.size() < requested_world_size) {
     GTEST_SKIP() << "This test needs distributed setting with at least "
                  << requested_world_size << " ranks";

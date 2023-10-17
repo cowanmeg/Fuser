@@ -135,6 +135,7 @@ c10::intrusive_ptr<c10d::Backend> createBackend(
 
 #if defined(USE_C10D_UCC) && defined(NVFUSER_BUILD_WITH_UCC)
   if (backend == CommunicatorBackend::ucc) {
+    std::cout << "Creating a UCC ProcessGroup on rank: " << rank << std::endl;
     return c10::make_intrusive<::c10d::ProcessGroupUCC>(store, rank, size);
   }
 #endif
