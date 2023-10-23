@@ -309,6 +309,7 @@ TEST_F(UCCMultiDeviceTest, Communication_Gather) {
 TEST_F(UCCMultiDeviceTest, Communication_Allgather) {
   allgather_test(get_communicator());
 }
+// TODO: Fix UCC Scatter error.
 // TEST_F(UCCMultiDeviceTest, Communication_Scatter) {
 //   scatter_test(get_communicator());
 // }
