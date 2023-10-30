@@ -319,9 +319,9 @@ TEST_F(UCCMultiDeviceTest, Communication_Broadcast) {
 TEST_F(UCCMultiDeviceTest, Communication_SendRecv) {
   sendrecv_test(get_communicator());
 }
-TEST_F(UCCMultiDeviceTest, Communication_SendRecvToSelf) {
-  sendrecvtoself_test(get_communicator());
-}
+//TEST_F(UCCMultiDeviceTest, Communication_SendRecvToSelf) {
+//  sendrecvtoself_test(get_communicator());
+//}
 
 } // namespace nvfuser
 

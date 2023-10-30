@@ -20,11 +20,10 @@ class MultiDeviceTest : public NVFuserTest {
     }
   protected:
     static void SetUpTestSuite() {
-      comm = new Communicator(CommunicatorBackend::nccl);
+      comm = new Communicator(CommunicatorBackend::nccl, 0, 5001);
     }
     static void TearDownTestSuite() {
       delete comm;
-      comm = nullptr;
     }
     static Communicator* comm;
 };
@@ -36,13 +35,12 @@ class UCCMultiDeviceTest : public NVFuserTest {
     }
   protected:
     static void SetUpTestSuite() {
-      ucomm = new Communicator(CommunicatorBackend::ucc);
+      ucomm = new Communicator(CommunicatorBackend::ucc, 0, 5002);
     }
     static void TearDownTestSuite() {
-      if (ucomm) {
-        delete ucomm;
-        ucomm = nullptr;
-      }
+	    std::cout << "delete ucc communicator" << std::endl;
+	    ucomm->barrier();
+	    delete ucomm;
     }
     static Communicator* ucomm;
 };

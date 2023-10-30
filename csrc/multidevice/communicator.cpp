@@ -143,14 +143,15 @@ c10::intrusive_ptr<c10d::Backend> createBackend(
 
 Communicator::Communicator(
     CommunicatorBackend backend,
-    RankType server_local_rank)
+    RankType server_local_rank,
+    int master_port)
     : is_available_(false),
       backend_type_(backend),
       rank_(0),
       size_(0),
       local_rank_(0),
       local_size_(0),
-      master_port_(0) {
+      master_port_(master_port) {
   // retrieves rank and communicator size
   is_available_ = parseEnv(
       rank_, size_, local_rank_, local_size_, master_addr_, master_port_);
