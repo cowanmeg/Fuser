@@ -80,7 +80,7 @@ void testValidateMultidevice(
     buffer = {inputs.at(i).toTensor()};
     if (tester != sender &&
         (comm.deviceId() == tester || comm.deviceId() == sender)) {
-      comm.sendRecv(tester, sender, buffer);
+      comm.sendRecv(tester, sender, buffer, CommunicatorBackendType::nccl);
     }
     input_tensors.push_back(buffer.at(0));
   }
@@ -99,7 +99,7 @@ void testValidateMultidevice(
     buffer = {outputs.at(i)};
     if (tester != sender &&
         (comm.deviceId() == tester || comm.deviceId() == sender)) {
-      comm.sendRecv(tester, sender, buffer);
+      comm.sendRecv(tester, sender, buffer, CommunicatorBackendType::nccl);
     }
     output_tensors.push_back(buffer.at(0));
   }

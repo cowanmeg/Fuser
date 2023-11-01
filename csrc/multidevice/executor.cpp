@@ -110,7 +110,7 @@ void PipelineExecutor::handle(PipelineCommunication* c) {
             runtime_.comm_.deviceId() == receiver_rank)) {
         continue;
       }
-      runtime_.comm_.sendRecv(receiver_rank, sender_rank, tensor);
+      runtime_.comm_.sendRecv(receiver_rank, sender_rank, tensor, CommunicatorBackendType::nccl);
     }
   }
   val_to_IValue_[output_val] = (c10::IValue)(tensor[0]);

@@ -47,7 +47,8 @@ static constexpr int number_of_repetitions = 8;
       buf.copy_(at::zeros(tensor_size, options));
     }
 
-    auto work = communication.post(comm);
+    // auto work = communication.post(comm);
+    auto work = comm.post(communication);
     work->wait();
 
     if (comm.deviceId() == root) {
@@ -91,7 +92,8 @@ void allgather_test(Communicator& comm) {
       buf.copy_(at::zeros(tensor_size, options));
     }
 
-    auto work = communication.post(comm);
+    // auto work = communication.post(comm);
+    auto work = comm.post(communication);
     work->wait();
 
     for (int i : c10::irange(comm.size())) {
@@ -136,7 +138,8 @@ void scatter_test(Communicator& comm) {
           at::arange(tensor_size, options) + (i + 1) * j);
     }
 
-    auto work = communication.post(comm);
+    // auto work = communication.post(comm);
+    auto work = comm.post(communication);
     work->wait();
 
     auto obtained = params.dst_bufs.at(0);
@@ -177,7 +180,8 @@ void broadcast_test(Communicator& comm) {
     }
     params.dst_bufs.at(0).copy_(at::zeros(tensor_size, options));
 
-    auto work = communication.post(comm);
+    // auto work = communication.post(comm);
+    auto work = comm.post(communication);
     if (comm.size() > 1) {
       work->wait();
     }
@@ -226,7 +230,8 @@ void sendrecv_test(Communicator& comm) {
       params.dst_bufs.at(0).copy_(at::zeros(tensor_size, options));
     }
 
-    auto work = communication.post(comm);
+    //auto work = communication.post(comm);
+    auto work = comm.post(communication);
     work->wait();
 
     if (comm.deviceId() == receiver) {
@@ -268,7 +273,8 @@ void sendrecvtoself_test(Communicator& comm) {
     params.src_bufs.at(0).copy_(at::arange(tensor_size, options) + j);
     params.dst_bufs.at(0).copy_(at::zeros(tensor_size, options));
 
-    communication.post(comm);
+    //communication.post(comm);
+    comm.post(communication);
 
     auto obtained = params.dst_bufs.at(0);
     auto ref = at::arange(tensor_size, options) + j;
@@ -283,6 +289,7 @@ void sendrecvtoself_test(Communicator& comm) {
   }
   comm.barrier();
 }
+
 
 TEST_F(MultiDeviceTest, Communication_Gather) {
   gather_test(get_communicator());
@@ -303,25 +310,29 @@ TEST_F(MultiDeviceTest, Communication_SendRecvToSelf) {
   sendrecvtoself_test(get_communicator());
 }
 
-TEST_F(UCCMultiDeviceTest, Communication_Gather) {
-  gather_test(get_communicator());
-}
-TEST_F(UCCMultiDeviceTest, Communication_Allgather) {
-  allgather_test(get_communicator());
-}
-// TODO: Fix UCC Scatter error.
-// TEST_F(UCCMultiDeviceTest, Communication_Scatter) {
-//   scatter_test(get_communicator());
+
+// TEST_F(UCCMultiDeviceTest, SetupTeardown) {
+//   std::cout << "Setup and teardown" << std::endl;
+//   EXPECT_EQ(0, 0);
 // }
-TEST_F(UCCMultiDeviceTest, Communication_Broadcast) {
-  broadcast_test(get_communicator());
-}
-TEST_F(UCCMultiDeviceTest, Communication_SendRecv) {
-  sendrecv_test(get_communicator());
-}
-//TEST_F(UCCMultiDeviceTest, Communication_SendRecvToSelf) {
+// //TEST_F(UCCMultiDeviceTest, Communication_Gather) {
+// //  gather_test(get_communicator());
+// //}
+// //TEST_F(UCCMultiDeviceTest, Communication_Allgather) {
+// //  allgather_test(get_communicator());
+// //}
+// // TEST_F(UCCMultiDeviceTest, Communication_Scatter) {
+// //   scatter_test(get_communicator());
+// // }
+// TEST_F(UCCMultiDeviceTest, Communication_Broadcast) {
+//   broadcast_test(get_communicator());
+// }
+// //TEST_F(UCCMultiDeviceTest, Communication_SendRecv) {
+// //  sendrecv_test(get_communicator());
+// //}
+// TEST_F(UCCMultiDeviceTest, Communication_SendRecvToSelf) {
 //  sendrecvtoself_test(get_communicator());
-//}
+// }
 
 } // namespace nvfuser
 

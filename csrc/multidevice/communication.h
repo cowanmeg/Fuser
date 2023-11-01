@@ -6,11 +6,8 @@
  */
 // clang-format on
 #pragma once
-#ifdef USE_DISTRIBUTED
 
-#include <multidevice/communicator.h>
 #include <multidevice/multidevice.h>
-
 namespace nvfuser {
 
 /*
@@ -58,13 +55,13 @@ class Communication {
 
   std::string toString(int indent = 0) const;
 
-  const auto& params() const {
+  auto& params() {
     return params_;
   }
 
-  // Triggers the execution of the communication. This is a non-blocking call.
-  // The communication can be posted multiple times
-  virtual c10::intrusive_ptr<c10d::Work> post(Communicator& comm) = 0;
+  DeviceIdxType root_relative_index() {
+    return root_relative_index_;
+  }
 
  protected:
   // argument "name" is only used for printing
@@ -95,7 +92,6 @@ Requirements:
 class Broadcast : public Communication {
  public:
   Broadcast(CommParams params);
-  c10::intrusive_ptr<c10d::Work> post(Communicator& comm) override;
 };
 
 /*
@@ -112,7 +108,6 @@ Requirements:
 class Gather : public Communication {
  public:
   Gather(CommParams params);
-  c10::intrusive_ptr<c10d::Work> post(Communicator& comm) override;
 };
 
 /*
@@ -127,7 +122,6 @@ Requirements:
 class Allgather : public Communication {
  public:
   Allgather(CommParams params);
-  c10::intrusive_ptr<c10d::Work> post(Communicator& comm) override;
 };
 
 /*
@@ -143,7 +137,6 @@ Requirements:
 class Scatter : public Communication {
  public:
   Scatter(CommParams params);
-  c10::intrusive_ptr<c10d::Work> post(Communicator& comm) override;
 };
 
 /*
@@ -164,9 +157,6 @@ buffer
 class SendRecv : public Communication {
  public:
   SendRecv(CommParams params);
-  c10::intrusive_ptr<c10d::Work> post(Communicator& comm) override;
 };
 
 } // namespace nvfuser
-
-#endif

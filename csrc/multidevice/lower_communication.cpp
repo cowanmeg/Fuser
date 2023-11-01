@@ -5,7 +5,6 @@
  * SPDX-License-Identifier: BSD-3-Clause
  */
 // clang-format on
-#ifdef USE_DISTRIBUTED
 #include <ir/interface_nodes.h>
 #include <multidevice/device_mesh.h>
 #include <multidevice/lower_communication.h>
@@ -335,5 +334,3 @@ std::vector<std::shared_ptr<Communication>> lowerCommunication(
 }
 
 } // namespace nvfuser
-
-#endif

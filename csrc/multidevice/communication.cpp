@@ -5,55 +5,11 @@
  * SPDX-License-Identifier: BSD-3-Clause
  */
 // clang-format on
-#ifdef USE_DISTRIBUTED
 
+#include <exceptions.h>
 #include <multidevice/communication.h>
 
 namespace nvfuser {
-namespace {
-
-inline void assertBufferCount(
-    const std::vector<at::Tensor>& bufs,
-    size_t count) {
-  NVF_ERROR(
-      bufs.size() == count,
-      "there must be ",
-      count,
-      " buffer(s), but ",
-      bufs.size(),
-      " were given");
-}
-
-inline void assertBuffersHaveSameSize(
-    const std::vector<at::Tensor>& bufs1,
-    const std::vector<at::Tensor>& bufs2) {
-  if (bufs1.empty() && bufs2.empty()) {
-    return;
-  }
-  auto sizes = (bufs1.empty() ? bufs2 : bufs1).at(0).sizes();
-  for (auto& bufs : {bufs1, bufs2}) {
-    for (auto& buf : bufs) {
-      NVF_ERROR(buf.sizes() == sizes, "all buffers must have the same size");
-    }
-  }
-}
-
-inline void post_common(Communication& self, Communicator& comm) {
-  NVF_ERROR(
-      std::find(
-          self.params().team.begin(),
-          self.params().team.end(),
-          comm.deviceId()) != self.params().team.end(),
-      "current device index ",
-      comm.deviceId(),
-      " must be present in the communication's team");
-}
-
-inline void doLocalCopy(const at::Tensor& dst, const at::Tensor& src) {
-  dst.copy_(src, /* non-blocking */ true);
-}
-
-} // namespace
 
 Communication::Communication(CommParams params, std::string name, bool has_root)
     : params_(std::move(params)),
@@ -107,55 +63,9 @@ std::string Communication::toString(int indent) const {
 
 Broadcast::Broadcast(CommParams params) : Communication(params, "broadcast") {}
 
-c10::intrusive_ptr<c10d::Work> Broadcast::post(Communicator& comm) {
-  post_common(*this, comm);
-
-  if (comm.deviceId() == params_.root) {
-    assertBufferCount(params_.src_bufs, 1);
-    if (params_.dst_bufs.size() == 1) {
-      doLocalCopy(params_.dst_bufs.at(0), params_.src_bufs.at(0));
-    } else {
-      assertBufferCount(params_.dst_bufs, 0);
-    }
-  } else {
-    assertBufferCount(params_.src_bufs, 0);
-    assertBufferCount(params_.dst_bufs, 1);
-  }
-
-  if (params_.team.size() == 1) {
-    return nullptr;
-  }
-
-  return comm.getBackendForTeam(params_.team)
-      ->broadcast(
-          comm.deviceId() == params_.root ? params_.src_bufs : params_.dst_bufs,
-          {.rootRank = root_relative_index_});
-}
-
 Gather::Gather(CommParams params) : Communication(params, "gather") {
   assertBufferCount(params_.src_bufs, 1);
   NVF_ERROR(params_.team.size() > 1, "the team size must be greater than 1");
-}
-
-c10::intrusive_ptr<c10d::Work> Gather::post(Communicator& comm) {
-  post_common(*this, comm);
-  // This is used to change the representation of the buffers to match c10d
-  // ProcessGroup API
-  std::vector<std::vector<at::Tensor>> buf_list;
-  if (comm.deviceId() == params_.root) {
-    assertBufferCount(params_.dst_bufs, params_.team.size());
-    buf_list = {std::move(params_.dst_bufs)};
-  } else {
-    assertBufferCount(params_.dst_bufs, 0);
-  }
-  auto work =
-      comm.getBackendForTeam(params_.team)
-          ->gather(
-              buf_list, params_.src_bufs, {.rootRank = root_relative_index_});
-  if (comm.deviceId() == params_.root) {
-    params_.dst_bufs = std::move(buf_list.back());
-  }
-  return work;
 }
 
 Allgather::Allgather(CommParams params)
@@ -165,42 +75,9 @@ Allgather::Allgather(CommParams params)
   NVF_ERROR(params_.team.size() > 1, "the team size must be greater than 1");
 }
 
-c10::intrusive_ptr<c10d::Work> Allgather::post(Communicator& comm) {
-  post_common(*this, comm);
-  // This is used to change the representation of the buffers to match c10d
-  // ProcessGroup API
-  std::vector<std::vector<at::Tensor>> buf_list;
-  buf_list = {std::move(params_.dst_bufs)};
-  auto work = comm.getBackendForTeam(params_.team)
-                  ->allgather(buf_list, params_.src_bufs, {});
-  params_.dst_bufs = std::move(buf_list.back());
-  return work;
-}
-
 Scatter::Scatter(CommParams params) : Communication(params, "scatter") {
   assertBufferCount(params_.dst_bufs, 1);
   NVF_ERROR(params_.team.size() > 1, "the team size must be greater than 1");
-}
-
-c10::intrusive_ptr<c10d::Work> Scatter::post(Communicator& comm) {
-  post_common(*this, comm);
-  // This is used to change the representation of the buffers to match c10d
-  // ProcessGroup API
-  std::vector<std::vector<at::Tensor>> buf_list;
-  if (comm.deviceId() == params_.root) {
-    assertBufferCount(params_.src_bufs, params_.team.size());
-    buf_list = {std::move(params_.src_bufs)};
-  } else {
-    assertBufferCount(params_.src_bufs, 0);
-  }
-  auto work =
-      comm.getBackendForTeam(params_.team)
-          ->scatter(
-              params_.dst_bufs, buf_list, {.rootRank = root_relative_index_});
-  if (comm.deviceId() == params_.root) {
-    params_.src_bufs = std::move(buf_list.back());
-  }
-  return work;
 }
 
 SendRecv::SendRecv(CommParams params) : Communication(params, "send/recv") {
@@ -209,30 +86,4 @@ SendRecv::SendRecv(CommParams params) : Communication(params, "send/recv") {
       "the team size should be 1 or 2");
 }
 
-c10::intrusive_ptr<c10d::Work> SendRecv::post(Communicator& comm) {
-  post_common(*this, comm);
-
-  if (comm.deviceId() == params_.root) {
-    assertBufferCount(params_.src_bufs, 1);
-    if (params_.team.size() == 1) {
-      assertBufferCount(params_.dst_bufs, 1);
-      doLocalCopy(params_.dst_bufs.at(0), params_.src_bufs.at(0));
-      return nullptr;
-    } else {
-      assertBufferCount(params_.dst_bufs, 0);
-    }
-  } else {
-    assertBufferCount(params_.src_bufs, 0);
-    assertBufferCount(params_.dst_bufs, 1);
-  }
-
-  return comm.sendRecv(
-      (params_.team.at(0) == params_.root) ? params_.team.at(1)
-                                           : params_.team.at(0),
-      params_.root,
-      params_.dst_bufs.empty() ? params_.src_bufs : params_.dst_bufs);
-}
-
 } // namespace nvfuser
-
-#endif
