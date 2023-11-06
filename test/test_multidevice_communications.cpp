@@ -17,8 +17,8 @@
 namespace nvfuser {
 
 static constexpr DeviceIdxType root = 0;
-static constexpr int tensor_size = 1024;
-static constexpr int number_of_repetitions = 8;
+static constexpr int tensor_size = 128;
+static constexpr int number_of_repetitions = 1;
 
 
  void gather_test(Communicator& comm) {
@@ -32,21 +32,31 @@ static constexpr int number_of_repetitions = 8;
   params.root = root;
   params.team = std::vector<DeviceIdxType>(comm.size());
   std::iota(params.team.begin(), params.team.end(), 0);
-  params.src_bufs = {at::empty(tensor_size, options)};
+  params.src_bufs = {at::zeros(tensor_size, options)};
   if (comm.deviceId() == root) {
     for (int i = 0; i < comm.size(); i++) {
-      params.dst_bufs.push_back(at::empty(tensor_size, options));
+      params.dst_bufs.push_back(at::zeros(tensor_size, options));
     }
+    std::cout << "Size of vector " << sizeof(params.dst_bufs) << std::endl;
+    std::cout << "Creating dst buffer on root " << root << " pram size " << params.dst_bufs.at(0).size(0) << std::endl;
   }
   auto communication = Gather(params);
+  std::cout << "create gather params " << comm.deviceId() << std::endl;
+  std::cout << comm.deviceId() << "gather param size " << sizeof(communication) << std::endl;
+  std::cout << "size of team" << sizeof(params.team) << " size of input " << sizeof(params.src_bufs) << " size of output " << sizeof(params.dst_bufs) << std::endl;
 
-  for (int j : c10::irange(number_of_repetitions)) {
-    params.src_bufs.at(0).copy_(
-        at::arange(tensor_size, options) + (comm.deviceId() + 1) * j);
+  for (int j : c10::irange(number_of_repetitions)) { 
+    std::cout << comm.deviceId() << "Size of src and dst " << params.src_bufs.size() << " " << params.dst_bufs.size() << std::endl;
+    auto x = at::arange(tensor_size, options) + (comm.deviceId() + 1) * j;
+    params.src_bufs.at(0).copy_(x);
+    std::cout << "src buffer setup" << comm.deviceId() << std::endl;
+
     for (auto& buf : params.dst_bufs) {
-      buf.copy_(at::zeros(tensor_size, options));
+      std::cout << "out buf set" << comm.deviceId() << std::endl;
+      auto z = at::zeros(tensor_size, options);
+      buf.copy_(z);
     }
-
+    std::cout << "Try to post gather " << comm.deviceId() << std::endl;
     // auto work = communication.post(comm);
     auto work = comm.post(communication);
     work->wait();
@@ -311,28 +321,24 @@ TEST_F(MultiDeviceTest, Communication_SendRecvToSelf) {
 }
 
 
-// TEST_F(UCCMultiDeviceTest, SetupTeardown) {
-//   std::cout << "Setup and teardown" << std::endl;
-//   EXPECT_EQ(0, 0);
-// }
-// //TEST_F(UCCMultiDeviceTest, Communication_Gather) {
-// //  gather_test(get_communicator());
-// //}
-// //TEST_F(UCCMultiDeviceTest, Communication_Allgather) {
-// //  allgather_test(get_communicator());
-// //}
-// // TEST_F(UCCMultiDeviceTest, Communication_Scatter) {
-// //   scatter_test(get_communicator());
-// // }
-// TEST_F(UCCMultiDeviceTest, Communication_Broadcast) {
-//   broadcast_test(get_communicator());
-// }
-// //TEST_F(UCCMultiDeviceTest, Communication_SendRecv) {
-// //  sendrecv_test(get_communicator());
-// //}
-// TEST_F(UCCMultiDeviceTest, Communication_SendRecvToSelf) {
-//  sendrecvtoself_test(get_communicator());
-// }
+TEST_F(UCCMultiDeviceTest, Communication_Gather) {
+  gather_test(get_communicator());
+}
+TEST_F(UCCMultiDeviceTest, Communication_Allgather) {
+  allgather_test(get_communicator());
+}
+//TEST_F(UCCMultiDeviceTest, Communication_Scatter) {
+//   scatter_test(get_communicator());
+//}
+TEST_F(UCCMultiDeviceTest, Communication_Broadcast) {
+   broadcast_test(get_communicator());
+}
+TEST_F(UCCMultiDeviceTest, Communication_SendRecv) {
+  sendrecv_test(get_communicator());
+}
+ TEST_F(UCCMultiDeviceTest, Communication_SendRecvToSelf) {
+  sendrecvtoself_test(get_communicator());
+}
 
 } // namespace nvfuser
 

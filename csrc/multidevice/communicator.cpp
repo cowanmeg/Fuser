@@ -117,11 +117,12 @@ bool parseEnv(
   return true;
 }
 
-inline std::string getTeamKey(const Team& team) {
+inline std::string getTeamKey(const Team& team, CommunicatorBackendType backend_type) {
+  std::string backend_str = (backend_type == CommunicatorBackendType::ucc) ? "ucc"  : "nccl";
   return std::accumulate(
       std::begin(team),
       std::end(team),
-      std::string{},
+      std::string{backend_str},
       [](const std::string& a, const RankType& b) {
         return a.empty() ? std::to_string(b) : a + ',' + std::to_string(b);
       });
@@ -195,16 +196,42 @@ Communicator::Communicator(
 }
 
 void Communicator::addBackend(CommunicatorBackendType backend_type) {
-  auto backend = CommunicatorBackend(backend_type);
-  backend.createWorld(size_, store_, deviceId());
-  cbackends_.emplace(backend_type, backend);
+  // auto backend = CommunicatorBackend(backend_type);
+  // backend.createWorld(size_, store_, deviceId());
+  // backends_.emplace(backend_type, backend);
+  std::vector<RankType> all_ranks(size_);
+  std::iota(all_ranks.begin(), all_ranks.end(), 0);
+  // creates world.
+  getBackendForTeam(all_ranks, backend_type);
+  std::cout << "Created a world backend" << std::endl;
 }
 
 c10::intrusive_ptr<c10d::Backend> Communicator::getBackendForTeam(
     const Team& team, CommunicatorBackendType backend_type) {
   if (backend_type == CommunicatorBackendType::none)
 	  backend_type = default_type_;
-  return cbackends_.at(backend_type).getBackendForTeam(team, store_, deviceId());
+  std::string team_key = getTeamKey(team, backend_type);
+  std::cout << "Get team for " << team_key << std::endl;
+
+  // check if backend associated with the team is present in the cache
+  if (backends_.find(team_key) == backends_.end()) { // create the backend and cache it
+    std::cout << "Create team for " << team_key << std::endl;
+    // check that the caller's rank belongs to the requested team
+    auto rank_it = std::find(team.begin(), team.end(), deviceId());
+    NVF_ERROR(
+        rank_it != team.end(),
+        "only devices in the team should participate to its initialization");
+    // retrieve the caller's rank index/position in the team
+    RankType team_rank = std::distance(team.begin(), rank_it);
+    // generate a string key which is unique to the team
+    // create the team and cache it
+    backends_[team_key] = createBackend(
+        backend_type,
+        c10::make_intrusive<c10d::PrefixStore>(team_key, store_),
+        team_rank,
+        team.size());
+  }
+  return backends_.at(team_key);
 }
 
 c10::intrusive_ptr<c10d::Work> Communicator::post(Allgather& ag, CommunicatorBackendType backend_type) {
@@ -223,6 +250,7 @@ c10::intrusive_ptr<c10d::Work> Communicator::post(Gather& gather, CommunicatorBa
   post_common(gather, *this);
   // This is used to change the representation of the buffers to match c10d
   // ProcessGroup API
+  std::cout << "Gather!" << deviceId() << std::endl;
   std::vector<std::vector<at::Tensor>> buf_list;
   if (deviceId() == gather.params().root) {
     assertBufferCount(gather.params().dst_bufs, gather.params().team.size());
@@ -231,6 +259,7 @@ c10::intrusive_ptr<c10d::Work> Communicator::post(Gather& gather, CommunicatorBa
     assertBufferCount(gather.params().dst_bufs, 0);
   }
   auto backend = getBackendForTeam(gather.params().team, backend_type);
+  std::cout << "Post gather" << deviceId() << std::endl;
   auto work = backend->gather(
               buf_list, gather.params().src_bufs, {.rootRank = gather.root_relative_index()});
   if (deviceId() == gather.params().root) {
@@ -261,7 +290,7 @@ c10::intrusive_ptr<c10d::Work> Communicator::post(Scatter& scatter, Communicator
 
 c10::intrusive_ptr<c10d::Work> Communicator::post(Broadcast& broadcast, CommunicatorBackendType backend_type) {
   post_common(broadcast, *this);
-
+  std::cout << "Broadcast! root " << broadcast.params().root << std::endl;
   if (deviceId() == broadcast.params().root) {
     assertBufferCount(broadcast.params().src_bufs, 1);
     if (broadcast.params().dst_bufs.size() == 1) {
@@ -278,7 +307,9 @@ c10::intrusive_ptr<c10d::Work> Communicator::post(Broadcast& broadcast, Communic
     return nullptr;
   }
 
+  std::cout << "Get Broadcast backend " << deviceId() << std::endl;
   auto backend = getBackendForTeam(broadcast.params().team, backend_type);
+  std::cout << "Got broadcast backend" << std::endl;
   return backend->broadcast(
           deviceId() == broadcast.params().root ? broadcast.params().src_bufs : broadcast.params().dst_bufs,
           {.rootRank = broadcast.root_relative_index()});
@@ -309,6 +340,16 @@ c10::intrusive_ptr<c10d::Work> Communicator::post(SendRecv& sr, CommunicatorBack
       backend_type);
 }
 
+c10::intrusive_ptr<c10d::Backend> Communicator::world(CommunicatorBackendType backend_type) {
+  if (backend_type == CommunicatorBackendType::none)
+	  backend_type = default_type_;
+  std::vector<RankType> all_ranks(size_);
+  std::iota(all_ranks.begin(), all_ranks.end(), 0);
+  std::string key = getTeamKey(all_ranks, backend_type);
+  std::cout << "World rank:" << deviceId() << " key: " << key << std::endl;
+  return backends_.at(key); 
+}
+
 c10::intrusive_ptr<c10d::Work> Communicator::sendRecv(
     DeviceIdxType receiver,
     DeviceIdxType sender,
@@ -319,49 +360,16 @@ c10::intrusive_ptr<c10d::Work> Communicator::sendRecv(
       deviceId() == sender || deviceId() == receiver,
       "only sender or receiver should post the sendRecv");
   NVF_ERROR(sender != receiver, "cannot send to self");
-  if (backend_type == CommunicatorBackendType::none)
-	  backend_type = default_type_;
   if (deviceId() == sender) {
-    return cbackends_.at(backend_type).world()->send(tensors, static_cast<int>(dIdToRank(receiver)), tag);
+    return world(backend_type)->send(tensors, static_cast<int>(dIdToRank(receiver)), tag);
   }
-  return cbackends_.at(backend_type).world()->recv(tensors, static_cast<int>(dIdToRank(sender)), tag);
+  return world(backend_type)->recv(tensors, static_cast<int>(dIdToRank(sender)), tag);
 }
 
 void Communicator::barrier(CommunicatorBackendType backend_type) {
-  if (backend_type == CommunicatorBackendType::none)
-	  backend_type = default_type_;
-  cbackends_.at(backend_type).world()->barrier()->wait();
-}
-
-void CommunicatorBackend::createWorld(int size, c10::intrusive_ptr<c10d::TCPStore> store, 
-  DeviceIdxType deviceId) {
-  std::vector<RankType> all_ranks(size);
-  std::iota(all_ranks.begin(), all_ranks.end(), 0);
-  world_ = getBackendForTeam(all_ranks, store, deviceId);
-}
-
-c10::intrusive_ptr<c10d::Backend> CommunicatorBackend::getBackendForTeam(
-    const Team& team, const c10::intrusive_ptr<c10d::TCPStore> store, DeviceIdxType deviceId) {
-  std::string team_key = getTeamKey(team);
-  // check if backend associated with the team is present in the cache
-  if (backends_.find(team_key) ==
-      backends_.end()) { // create the backend and cache it
-    // check that the caller's rank belongs to the requested team
-    auto rank_it = std::find(team.begin(), team.end(), deviceId);
-    NVF_ERROR(
-        rank_it != team.end(),
-        "only devices in the team should participate to its initialization");
-    // retrieve the caller's rank index/position in the team
-    RankType team_rank = std::distance(team.begin(), rank_it);
-    // generate a string key which is unique to the team
-    // create the team and cache it
-    backends_[team_key] = createBackend(
-        backend_type_,
-        c10::make_intrusive<c10d::PrefixStore>(team_key, store),
-        team_rank,
-        team.size());
-  }
-  return backends_.at(team_key);
+  std::cout << "Barrier called" << std::endl;
+  world(backend_type)->barrier()->wait();
+  std::cout << "Barrier returns" << std::endl;
 }
 
 } // namespace nvfuser

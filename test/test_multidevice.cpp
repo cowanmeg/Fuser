@@ -54,8 +54,9 @@ using namespace at::indexing;
 
 // Communicator MultiDeviceTest::comm = {};
 Communicator* MultiDeviceTest::comm = nullptr;
-Communicator* UCCMultiDeviceTest::ucomm = nullptr;
-
+// Communicator* UCCMultiDeviceTest::comm = nullptr;
+//std::unique_ptr<Communicator> MultiDeviceTest::comm = nullptr;
+//std::unique_ptr<Communicator> UCCMultiDeviceTest::comm = nullptr;
 // utility function for validation
 void testValidateMultidevice(
     std::unique_ptr<Fusion> fusion_ptr,

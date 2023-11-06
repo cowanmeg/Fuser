@@ -21,28 +21,34 @@ class MultiDeviceTest : public NVFuserTest {
   protected:
     static void SetUpTestSuite() {
       comm = new Communicator(CommunicatorBackendType::nccl);
+      // comm = std::make_unique<Communicator>(CommunicatorBackendType::nccl);
     }
     static void TearDownTestSuite() {
-      delete comm;
+	    comm->barrier();
+    	std::cout << "Teardown" << std::endl;
     }
+    //static std::unique_ptr<Communicator> comm;
     static Communicator* comm;
 };
 
-class UCCMultiDeviceTest : public NVFuserTest {
-  public:
-    Communicator& get_communicator() {
-      return *ucomm;
-    }
+class UCCMultiDeviceTest : public MultiDeviceTest {
+
   protected:
     static void SetUpTestSuite() {
-      ucomm = new Communicator(CommunicatorBackendType::ucc);
+	    if (comm == nullptr)
+		   comm = new Communicator(CommunicatorBackendType::ucc);
+	    else {
+		    std::cout << "Reuse same communicator" << std::endl;
+		    comm->addBackend(CommunicatorBackendType::ucc);
+				comm->makeDefaultBackend(CommunicatorBackendType::ucc);
+			}	
+     // comm = std::make_unique<Communicator>(CommunicatorBackendType::ucc);
     }
     static void TearDownTestSuite() {
-	    std::cout << "going to delete ucc communicator" << std::endl;
-	    delete ucomm;
-	    std::cout << "deleted ucc communicator" << std::endl;
+			comm->barrier();
+			std::cout << "Tear down tst suit. Will delete ucc communicator" << std::endl;
     }
-    static Communicator* ucomm;
+    //static std::unique_ptr<Communicator> comm;
 };
 
 } // namespace nvfuser

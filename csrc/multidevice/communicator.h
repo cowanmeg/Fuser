@@ -39,31 +39,6 @@ constexpr int comm_server_local_rank_default = 0;
 constexpr int comm_master_port_default =
     c10d::TCPStoreOptions::kDefaultPort; // 29500
 
-class CommunicatorBackend {
-  public:
-    CommunicatorBackend(CommunicatorBackendType backend_type) : backend_type_(backend_type) {}
-    // creates the world's backend
-    void createWorld(int size, c10::intrusive_ptr<c10d::TCPStore> store, 
-      DeviceIdxType deviceId);
-
-    // retrieve/create backend for a team
-    c10::intrusive_ptr<c10d::Backend> getBackendForTeam(const Team& team, 
-      const c10::intrusive_ptr<c10d::TCPStore> store,
-      DeviceIdxType deviceId);
-
-    // return world's backend
-    c10::intrusive_ptr<c10d::Backend> world() {
-      return world_;
-    }
-
-  protected:
-    CommunicatorBackendType backend_type_;
-    // stores the world's backend
-    c10::intrusive_ptr<c10d::Backend> world_;
-    // cache for the created backends. The keys are strings generated from Teams
-    std::unordered_map<std::string, c10::intrusive_ptr<c10d::Backend>> backends_;
-};
-
 class Communicator {
  public:
   Communicator(
@@ -90,6 +65,8 @@ class Communicator {
 
   // adds another backend type to the communicator
   void addBackend(CommunicatorBackendType backend);
+
+  void makeDefaultBackend(CommunicatorBackendType backend) {default_type_ = backend;}
 
   // Triggers the execution of a communication. This is a non-blocking call.
   // The communication can be posted multiple times
@@ -138,6 +115,8 @@ class Communicator {
 
   // returns the backend associated with a team and backend type
   c10::intrusive_ptr<c10d::Backend> getBackendForTeam(const Team& team, CommunicatorBackendType backend_type);
+  c10::intrusive_ptr<c10d::Backend> world(CommunicatorBackendType backend_type);
+
 
   bool is_available_;
   CommunicatorBackendType default_type_;
@@ -151,10 +130,9 @@ class Communicator {
   c10::intrusive_ptr<c10d::TCPStore> store_;
   // // stores the world's backend
   // c10::intrusive_ptr<c10d::Backend> world_;
-  // // cache for the created backends. The keys are strings generated from Teams
-  // std::unordered_map<std::string, c10::intrusive_ptr<c10d::Backend>> backends_;
-
-  std::map<CommunicatorBackendType, CommunicatorBackend> cbackends_;
+  // cache for the created backends. The keys are strings generated from Teams
+  std::unordered_map<std::string, c10::intrusive_ptr<c10d::Backend>> backends_;
+  // std::map<CommunicatorBackendType, CommunicatorBackend> cbackends_;
 };
 
 } // namespace nvfuser
