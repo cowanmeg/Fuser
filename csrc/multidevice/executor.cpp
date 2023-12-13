@@ -11,6 +11,7 @@
 #include <multidevice/executor.h>
 #include <multidevice/lower_communication.h>
 #include <multidevice/pipeline.h>
+#include <multidevice/utils.h>
 
 namespace nvfuser {
 

@@ -1741,7 +1741,7 @@ std::vector<Val*> Index::getNonGlobalProducerStridedIndices(
   for (auto alloc_id : alloc_dom) {
     // Already taken care of because we can detect no indexing required
     if (alloc_id->isBroadcast() || alloc_id->isReduction() ||
-        alloc_id->isStride() || alloc_id->isDeviceDim() ||
+        alloc_id->isStride() ||
         (alloc_id->isThread() &&
          producer_tv->getMemoryType() == MemoryType::Local)) {
       skip_indexing.insert(alloc_id);
@@ -1824,7 +1824,7 @@ std::vector<Val*> Index::getNonGlobalProducerStridedIndices(
 
       alloc_ext_j = getHaloExtentOfRootAxis(alloc_dom[j], alloc_ext_j);
 
-      if (zero_domain_map.count(alloc_dom[j]) == 0 ||
+      if (alloc_dom[j]->isDeviceDim() || zero_domain_map.count(alloc_dom[j]) == 0 ||
           is_mma_allocation(alloc_dom[j])) {
         if (stride == nullptr) {
           stride = alloc_ext_j;
@@ -1920,7 +1920,7 @@ std::vector<Val*> Index::getStrides(TensorView* tv) {
   Val* cur_contig_stride = GpuLower::current()->kernel()->oneVal();
   for (const auto i : c10::irange(alloc_dom.size())) {
     auto dim = alloc_dom.size() - i - 1;
-    if (alloc_dom[dim]->isReduction() || alloc_dom[dim]->isStride()) {
+    if (alloc_dom[dim]->isReduction() || alloc_dom[dim]->isStride() || alloc_dom[dim]->isDeviceDim()) {
       continue;
     }
 

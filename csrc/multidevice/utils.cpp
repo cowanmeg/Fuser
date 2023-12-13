@@ -14,14 +14,14 @@
 namespace nvfuser {
 
 bool isSharded(TensorView* tv) {
-  NVF_ERROR(tv->getMaybeRFactorDomain() == tv->getLeafDomain());
+  // split now working.
+  // NVF_ERROR(tv->getMaybeRFactorDomain() == tv->getLeafDomain());
   bool is_sharded = false;
     for (IterDomain* id : TensorDomain::noReductions(tv->getLeafDomain())) {
-      auto sharded_on_didx = isParallelTypeDeviceDim(id->getParallelType());
+      auto sharded_on_didx = id->getParallelType() == ParallelType::DIDx;
       NVF_ERROR(
-        is_sharded || !sharded_on_didx,
+        !(is_sharded && sharded_on_didx),
         "Cannot shard multiple axis on the same device dimension");
-      }
       is_sharded = is_sharded || sharded_on_didx;
     }
   return is_sharded;
@@ -37,3 +37,4 @@ int dimWithParallelType(TensorView* tv, ParallelType pt) {
 }
 
 } // namespace nvfuser
+

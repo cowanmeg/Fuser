@@ -212,6 +212,7 @@ void lowerToAllgather(
 
   int slice_size = output_tensor.numel() / mesh.vector().size();
   std::cout << "Size of allgather slice " << slice_size << std::endl;
+  std::cout << "allgather input " << input_tensor << std::endl;
 
   CommParams params;
   params.team = mesh.vector();
