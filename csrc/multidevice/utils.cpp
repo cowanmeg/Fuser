@@ -14,18 +14,26 @@
 namespace nvfuser {
 
 bool isSharded(TensorView* tv) {
-  std::vector<bool> is_sharded;
-  for (IterDomain* id : TensorDomain::noReductions(tv->getLeafDomain())) {
-    is_sharded.push_back(id->isDeviceDim());
-  }
-  // Currently, only the most external dim is allowed to be sharded
   NVF_ERROR(tv->getMaybeRFactorDomain() == tv->getLeafDomain());
-  for (auto i : c10::irange(1, is_sharded.size())) {
-    NVF_ERROR(
-        !is_sharded.at(i),
-        "only the outmost dimension can be device-parallelized");
+  bool is_sharded = false;
+    for (IterDomain* id : TensorDomain::noReductions(tv->getLeafDomain())) {
+      auto sharded_on_didx = isParallelTypeDeviceDim(id->getParallelType());
+      NVF_ERROR(
+        is_sharded || !sharded_on_didx,
+        "Cannot shard multiple axis on the same device dimension");
+      }
+      is_sharded = is_sharded || sharded_on_didx;
+    }
+  return is_sharded;
+}
+
+int dimWithParallelType(TensorView* tv, ParallelType pt) {
+  for (size_t i = 0; i < tv->nDims(); ++i) {
+    if (tv->axis(i)->getParallelType() == pt) {
+      return i;
+    }
   }
-  return is_sharded.empty() ? false : is_sharded.at(0);
+  return -1;
 }
 
 } // namespace nvfuser

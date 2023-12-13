@@ -96,6 +96,7 @@ CommParams createParamsForGatherScatter(
     DeviceIdxType my_device_index,
     DeviceIdxType root,
     const DeviceMesh& mesh, // is_scatter? receivers : senders
+    int sharded_dim, // is_scatter? output sharded dim : input sharded dim
     at::Tensor root_buf, // is_scatter? input buf : output buf
     at::Tensor buf, // is_scatter? output buf : input buf
     bool is_scatter) {
@@ -107,21 +108,39 @@ CommParams createParamsForGatherScatter(
      params.team.push_back(root);
   }
 
+  // stride over dimension sharded by DIDx
+  int stride = root_buf.size(sharded_dim) / mesh.vector().size(); 
+  std::vector<at::indexing::TensorIndex> slice0_indices(root_buf.dim(), at::indexing::Slice());
+  slice0_indices[sharded_dim] = at::indexing::Slice(0, stride);
+  // TODO: After output tensor allocation size fix merged only use the if branch. 
   if (mesh.has(my_device_index)) {
-    auto sliced_buf = buf.index({0, "..."});
-    ((is_scatter) ? params.dst_bufs : params.src_bufs) = {sliced_buf};
+    if (sharded_dim == 0) {
+      ((is_scatter) ? params.dst_bufs : params.src_bufs) = {buf.index(slice0_indices)};
+    } else {
+      // Temp hack to get a slice of the output buffer that is contiguous.
+      int slice_size = root_buf.numel() / mesh.vector().size();
+      std::cout << "Slice size " << slice_size << std::endl;
+      ((is_scatter) ? params.dst_bufs : params.src_bufs) = {buf.flatten().index({at::indexing::Slice(0, slice_size)})};
+    }
   }
 
   if (my_device_index == root) {
     for (auto i : c10::irange(mesh.vector().size())) {
-      ((is_scatter)? params.src_bufs : params.dst_bufs).push_back(root_buf.index({static_cast<int>(i), "..."}));
+      std::vector<at::indexing::TensorIndex> indices(root_buf.dim(), at::indexing::Slice());
+      indices[sharded_dim] = at::indexing::Slice(i*stride, (i+1)*stride);
+      // TODO: Keep only if branch after allocation fix merged. This keeps slice size the same. 
+      if (sharded_dim == 0) {
+        ((is_scatter)? params.src_bufs : params.dst_bufs).push_back(root_buf.index(indices).contiguous());
+      } else {
+        ((is_scatter)? params.src_bufs : params.dst_bufs).push_back(root_buf.index(indices).flatten().contiguous());
+      }
     }
     // The scatter/gather semantics imposes the root to be both
     // sender and receiver. If the root is not in the mesh, we thus
     // have to artificially make it send and receive a dummy buffer
     // Since it is an "inplace" operation, this should not cause any overhead
     if (!is_root_in_mesh) {
-      at::Tensor dummy = createDummyTensor(root_buf.index({0, "..."}));
+      at::Tensor dummy = createDummyTensor(root_buf.index(slice0_indices).contiguous());
       params.src_bufs.push_back(dummy);
       params.dst_bufs.push_back(dummy);
     }
@@ -134,6 +153,7 @@ void lowerToScatter(
     DeviceIdxType my_device_index,
     const DeviceMesh& sender_mesh,
     const DeviceMesh& receiver_mesh,
+    int output_sharded_dim,
     at::Tensor input_tensor,
     at::Tensor output_tensor,
     std::vector<std::shared_ptr<Communication>>& comms) {
@@ -143,7 +163,7 @@ void lowerToScatter(
     return;
   }
   auto params = createParamsForGatherScatter(
-      my_device_index, root, receiver_mesh, input_tensor, output_tensor, true);
+      my_device_index, root, receiver_mesh, output_sharded_dim, input_tensor, output_tensor, true);
   comms.push_back(std::make_shared<Scatter>(std::move(params)));
 }
 
@@ -157,6 +177,7 @@ void lowerToGather(
     DeviceIdxType my_device_index,
     const DeviceMesh& sender_mesh,
     const DeviceMesh& receiver_mesh,
+    int input_sharded_dim,
     at::Tensor input_tensor,
     at::Tensor output_tensor,
     std::vector<std::shared_ptr<Communication>>& comms) {
@@ -166,7 +187,7 @@ void lowerToGather(
       continue;
     }
     auto params = createParamsForGatherScatter(
-        my_device_index, root, sender_mesh, output_tensor, input_tensor, false);
+        my_device_index, root, sender_mesh, input_sharded_dim, output_tensor, input_tensor, false);
     comms.push_back(std::make_shared<Gather>(std::move(params)));
   }
 }
@@ -175,6 +196,7 @@ void lowerToGather(
 void lowerToAllgather(
     DeviceIdxType my_device_index,
     const DeviceMesh& mesh,
+    int input_sharded_dim,
     at::Tensor input_tensor,
     at::Tensor output_tensor,
     std::vector<std::shared_ptr<Communication>>& comms) {
@@ -182,13 +204,22 @@ void lowerToAllgather(
     return;
   }
 
+  std::cout << my_device_index << " Inserting allgather" << std::endl;
+
+  // std::vector<at::indexing::TensorIndex> index_slice(output_tensor.dim(), at::indexing::Slice());
+  // index_slice[input_sharded_dim] = 0;
+  // auto slice_size = output_tensor.index(index_slice).numel();
+
+  int slice_size = output_tensor.numel() / mesh.vector().size();
+  std::cout << "Size of allgather slice " << slice_size << std::endl;
+
   CommParams params;
   params.team = mesh.vector();
   for (auto i : c10::irange(mesh.vector().size())) {
     params.dst_bufs.push_back(
-        output_tensor.index({static_cast<int>(i), "..."}));
+        at::flatten(output_tensor).slice(0, i*slice_size, (i+1)*slice_size));
   }
-  params.src_bufs = {input_tensor.index({0, "..."})};
+  params.src_bufs = {at::flatten(input_tensor).slice(0, 0, slice_size)};
 
   comms.push_back(std::make_shared<Allgather>(std::move(params)));
 }
@@ -386,6 +417,18 @@ void lowerToReduceScatter(
   comms.push_back(std::make_shared<ReduceScatter>(params));
 }
 
+// Checks that a sharded axis length equals device mesh.
+// TODO: Extend to multi-dimensional device mesh
+bool checkShardingSizes(at::Tensor& tensor, TensorView* tv, const DeviceMesh& mesh) {
+    int sharded_dim = dimWithParallelType(tv, ParallelType::DIDx);
+    auto sharded_dim_extent = tv->getLeafDomain()[sharded_dim]->extent();
+    if (sharded_dim_extent->isSymbolic()) {
+      // TODO: this is only the correct access to check on tensor if no splits/merges happen in axes before sharded_dim.
+      return  static_cast<size_t>(tensor.size(sharded_dim)) == mesh.vector().size();
+    }
+    return static_cast<size_t>(sharded_dim_extent->value()) == mesh.vector().size();
+}
+
 } // namespace
 
 
@@ -413,6 +456,9 @@ std::vector<std::shared_ptr<Communication>> lowerCommunication(
       c->out()->as<PipelineVal>()->getOriginalVal()->as<TensorView>();
   at::Tensor dummy;
 
+  int input_sharded_dim = dimWithParallelType(input_tv, ParallelType::DIDx);
+  int output_sharded_dim = dimWithParallelType(output_tv, ParallelType::DIDx);
+
   const auto& sender_mesh =
       c->in()->as<PipelineVal>()->getStage()->descriptor()->mesh;
   const auto& receiver_mesh =
@@ -432,22 +478,20 @@ std::vector<std::shared_ptr<Communication>> lowerCommunication(
   NVF_ERROR(
       !is_input_sharded ||
       !input_tensor.numel() ||
-          sender_mesh.vector().size() ==
-              static_cast<size_t>(input_tensor.size(0)),
+      checkShardingSizes(input_tensor, input_tv, sender_mesh),
       "the size of the mesh ",
       sender_mesh.vector().size(),
       " doesn't match the size of the tensor ",
-      input_tensor.size(0));
+      input_tensor.size(input_sharded_dim));
   NVF_ERROR(
       !is_output_sharded ||
       !output_tensor.numel() ||
       is_reduction ||
-          receiver_mesh.vector().size() ==
-              static_cast<size_t>(output_tensor.size(0)),
+      checkShardingSizes(output_tensor, output_tv, receiver_mesh),
       "the size of the mesh",
       receiver_mesh.vector().size(),
       " doesn't match the size of the tensor ",
-      output_tensor.size(0));
+      output_tensor.size(output_sharded_dim));
   if (is_reduction) {
     BinaryOpType op_type = output_tv->definition()->as<ReductionOp>()->getReductionOpType();
     NVF_ERROR(is_input_sharded, "the comm input must be sharded in case of reduce.",
@@ -485,18 +529,20 @@ std::vector<std::shared_ptr<Communication>> lowerCommunication(
           my_device_index,
           sender_mesh,
           receiver_mesh,
+          output_sharded_dim,
           input_tensor,
           output_tensor,
           comms);
     } else if (is_input_sharded && !is_output_sharded) {
       if (receiver_mesh == sender_mesh) {
         lowerToAllgather(
-            my_device_index, sender_mesh, input_tensor, output_tensor, comms);
+            my_device_index, sender_mesh, input_sharded_dim, input_tensor, output_tensor, comms);
       } else {
         lowerToGather(
             my_device_index,
             sender_mesh,
             receiver_mesh,
+            input_sharded_dim,
             input_tensor,
             output_tensor,
             comms);
