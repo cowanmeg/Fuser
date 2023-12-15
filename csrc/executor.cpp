@@ -573,7 +573,6 @@ std::pair<std::vector<int64_t>, std::vector<int64_t>> inferShapeOfIntermediate( 
   // For intermediate tensors, we just need to allocate a memory chunk
   // of the specified size. Broadcast expansion does not need to be considered.
   const auto expand_flags = std::vector<bool>(symbolic_sizes.size(), false);
-
   return inferShape(tv, symbolic_sizes, expand_flags, expr_eval);
 }
 
@@ -587,10 +586,9 @@ std::pair<std::vector<int64_t>, std::vector<int64_t>> inferShapeOfOutput( //see 
 
   std::vector<Val*> symbolic_sizes;
   std::vector<bool> expand_flags;
-
   // Allocate the allocation domain
   for (const auto id : tv->getMaybeAllocationDomain()) {
-    if (id->isReduction() || id->isStride()) { //add isDevice?
+    if (id->isReduction() || id->isStride() || id->isDeviceDim()) { //add isDevice?
       continue;
     }
     symbolic_sizes.push_back(id->getMaybeExpandedExtent());
@@ -953,6 +951,9 @@ at::Tensor allocateOutput(
     }
   }
 
+  std::cout << "Out_info sizes " << out_info.sizes << std::endl;
+  std::cout << "Out_info strides " << out_info.strides << std::endl;
+
   auto alloc_tensor = at::native::empty_strided_cuda(
       out_info.sizes,
       out_info.strides,
@@ -963,6 +964,9 @@ at::Tensor allocateOutput(
   if (shouldFillAllocationWithNan()) {
     fillTensorWithNan(alloc_tensor);
   }
+
+  // std::cout << "Output tv" << out_tv->toString() << std::endl;
+  // std::cout << "Allocated output tensor before xforms " << alloc_tensor.sizes() << std::endl;
 
   if (!out_tv->hasAllocation()) {
     return alloc_tensor;
@@ -1266,6 +1270,10 @@ std::vector<FusionExecutor::GlobalBufferInfo> FusionExecutor::
 
 std::vector<at::Tensor> FusionExecutor::allocOutputSpace(
     const at::ArrayRef<c10::IValue>& inputs) {
+  // std::cout << "FusionExecutor::allocOutputSpace " << std::endl;
+  // for (auto i : inputs) {
+  //   std::cout << i << std::endl;
+  // }
   auto kernel_inputs = KernelArgumentHolder::createKernelArgumentHolder(inputs);
   auto expr_eval =
       executor_utils::bindInputs(kernel_inputs, lowered_->kernel());

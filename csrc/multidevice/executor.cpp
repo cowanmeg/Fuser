@@ -33,6 +33,7 @@ void PipelineExecutor::handle(PipelineStage* stage) {
     auto input_val = input->as<PipelineVal>()->getOriginalVal();
     NVF_ERROR(val_to_IValue_.find(input_val) != val_to_IValue_.end(), "Device ", runtime_.comm_.deviceId(), " has no buffer associated with Val ", input_val, " for handling stage ", stage);
     NVF_ERROR(val_to_IValue_.at(input_val).isTensor());
+      std::cout << "Input to PipelineStage " << val_to_IValue_.at(input_val).toTensor() << std::endl;
     stage_input_IValues.push_back(val_to_IValue_.at(input_val));
   }
 
@@ -67,6 +68,7 @@ void PipelineExecutor::handle(PipelineStage* stage) {
   // Store the outputs or placeholders in the context
   for (auto output_idx : c10::irange(outputs.size())) {
     val_to_IValue_[stage->outputs().at(output_idx)->as<PipelineVal>()->getOriginalVal()] = outputs.at(output_idx);
+    std::cout << "Pipeline Stage Outputs: " << outputs.at(output_idx) << std::endl;
   }
 }
 
@@ -81,13 +83,51 @@ void PipelineExecutor::handle(PipelineCommunication* c) {
     output_tensor = val_to_IValue_.at(output_val).toTensor();
   }
   std::cout << "Pipeline commmunication input " << input_tensor << std::endl;
+  std::cout << "Input tv " << static_cast<TensorView*>(input_val)->toString() << std::endl;
 
+  int input_sharded_dim = dimWithParallelType(static_cast<TensorView*>(input_val), ParallelType::DIDx);
+  int output_sharded_dim = dimWithParallelType(static_cast<TensorView*>(output_val), ParallelType::DIDx);
+
+  auto output_ = output_tensor;
+  std::vector<int64_t> permute_order;
+  if (input_sharded_dim > 0 && output_sharded_dim == -1) {
+    // input tensor was sharded like [a b .. DIDx ... c d] where DIDx is the axis parallelized on DIDx (input_sharded_dim)
+    // the output tensor elements will be ordered as [DIDx a b c d] with device dimensions pushed to the outer most axis
+    // TODO: for tensor sharded over multiple dimensions it will be [DIDz DIDy DIDx ...]
+    // TODO: should probably do this analysis on the tensorview's shape
+    auto shape = output_tensor.sizes();
+    // 3 4 2  
+    // 2 3 4  {1 2 0}
+
+    // 3 2 4
+    // 2 3 4 {1 0 2}
+    std::vector<int64_t> written_shape;
+    written_shape.push_back(shape[input_sharded_dim]);
+    int permute_offset = 1;
+    for (int i = 0; i < output_tensor.dim(); i++) {
+      if (i == input_sharded_dim) {
+        permute_order.push_back(0);
+        permute_offset--;
+      } else {
+        written_shape.push_back(shape[i]);
+        permute_order.push_back(i + permute_offset);
+      }
+    }
+    output_ = at::randn(written_shape, output_tensor.options());
+  }
+  std::cout << "Output shape " << output_.sizes() << std::endl;
+  std::cout << "Output tensor size " << output_tensor.sizes() << std::endl;
+  std::cout << "Permute order ";
+  for (auto i : permute_order) {
+    std::cout << i << " ";
+  }
+  std::cout << std::endl;
   // Lower the Communication into a vector of Communications
   if (communications_.find(c) == communications_.end()) { // check if cached
     communications_.emplace(
         c,
         lowerCommunication(
-            runtime_.comm_.deviceId(), c, input_tensor, output_tensor));
+            runtime_.comm_.deviceId(), c, input_tensor, output_));
   }
   auto& communications = communications_[c];
 
@@ -96,28 +136,15 @@ void PipelineExecutor::handle(PipelineCommunication* c) {
     auto work = communication->post(runtime_.comm_);
     if (work) work->wait();
   }
-  std::cout << "Pipeline communication output " << output_tensor << std::endl;
-
-  int input_sharded_dim = dimWithParallelType(static_cast<TensorView*>(input_val), ParallelType::DIDx);
-  int output_sharded_dim = dimWithParallelType(static_cast<TensorView*>(output_val), ParallelType::DIDx);
-  // Need to relayout tensor when sharded dimension is not the outer dimension.
+  std::cout << "Output tv " << static_cast<TensorView*>(output_val)->toString() << std::endl;
+  std::cout << "Pipeline communication output " << output_ << std::endl;
+  
   if (input_sharded_dim > 0 && output_sharded_dim == -1) {
-      std::cout << "Relayout... required input is sharded on " << input_sharded_dim;
-      std::cout << " output is not sharded" << std::endl;
-      auto shape = output_tensor.sizes();
-      std::vector<int64_t> new_shape;
-      for (int i = 0; i < output_tensor.dim(); i++) {
-        if (i == 0) {
-          new_shape.push_back(shape[input_sharded_dim]);
-        } else if (i == input_sharded_dim) {
-          new_shape.push_back(shape[0]);
-        } else{
-          new_shape.push_back(shape[i]);
-        }
-      }
-      auto goal = output_tensor.clone().reshape(new_shape).permute({1, 0});
+      // Permute the axis into the correct order and copy into output_tensor.
+      auto goal = output_.permute(permute_order);
+      std::cout << "goal size" << goal.sizes() << std::endl;
       output_tensor.copy_(goal);
-      std::cout << "New output tensor " << output_tensor << std::endl;
+      std::cout << "Output tensor after optional relayout" << std::endl << output_tensor << std::endl;
   }
 }
 

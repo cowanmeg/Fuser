@@ -39,9 +39,9 @@ std::pair<std::unique_ptr<Fusion>, std::unordered_map<Val*, Val*>> copyFusionAnd
 
     for (auto tv : ir_utils::filterByType<TensorView>(fusion_copy->vals())) {
       tv->setMemoryType(MemoryType::Global);
-      for (auto i : c10::irange(tv->domain()->nDims())) {
-        tv->axis(i)->parallelize(ParallelType::Serial);
-      }
+    //   for (auto i : c10::irange(tv->domain()->nDims())) {
+    //     tv->axis(i)->parallelize(ParallelType::Serial);
+    //   }
     }
 
     return std::make_pair<std::unique_ptr<Fusion>, std::unordered_map<Val*, Val*>>(std::move(fusion_copy), std::move(copy_to_original_map));
@@ -88,7 +88,9 @@ std::unordered_map<Val*, c10::IValue> allocatePipelineIntermediateBuffers(Pipeli
         // allocations.emplace(vals_to_allocate.at(i), buffers.at(i));
         allocations.emplace(copy_to_original_map[fusion_copy->outputs().at(i)], buffers.at(i));
     }
-
+    for (auto i : allocations) {
+        std::cout << "multidevice/allocator Allocated " << i << std::endl;
+    }
     return allocations;
 }
 

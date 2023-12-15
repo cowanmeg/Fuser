@@ -428,8 +428,7 @@ class Index {
       const std::unordered_set<kir::ForLoop*>& rotated_loops,
       const std::unordered_map<IterDomain*, Val*>& override_index = {});
 
-  // get the strides of a tensor used for the index lowering
-  static std::vector<Val*> getStrides(TensorView* tv);
+  
 
   // get the allocation indices of a consumer tensor
   static std::vector<Val*> getConsumerAllocationIndices(
@@ -446,6 +445,9 @@ class Index {
       const std::unordered_map<IterDomain*, Val*>& override_index = {});
 
  public:
+ // get the strides of a tensor used for the index lowering
+  static std::vector<Val*> getStrides(TensorView* tv);
+  
   // Producer if it's in global memory
   static std::vector<Val*> getGlobalProducerStridedIndices(
       TensorView* producer,

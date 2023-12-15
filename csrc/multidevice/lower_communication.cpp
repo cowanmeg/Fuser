@@ -112,28 +112,20 @@ CommParams createParamsForGatherScatter(
   int stride = root_buf.size(sharded_dim) / mesh.vector().size(); 
   std::vector<at::indexing::TensorIndex> slice0_indices(root_buf.dim(), at::indexing::Slice());
   slice0_indices[sharded_dim] = at::indexing::Slice(0, stride);
-  // TODO: After output tensor allocation size fix merged only use the if branch. 
   if (mesh.has(my_device_index)) {
-    if (sharded_dim == 0) {
-      ((is_scatter) ? params.dst_bufs : params.src_bufs) = {buf.index(slice0_indices)};
-    } else {
-      // Temp hack to get a slice of the output buffer that is contiguous.
-      int slice_size = root_buf.numel() / mesh.vector().size();
-      std::cout << "Slice size " << slice_size << std::endl;
-      ((is_scatter) ? params.dst_bufs : params.src_bufs) = {buf.flatten().index({at::indexing::Slice(0, slice_size)})};
-    }
+    ((is_scatter) ? params.dst_bufs : params.src_bufs) = {buf};
+    // Temp hack to get a slice of the output buffer that is contiguous.
+    // int slice_size = root_buf.numel() / mesh.vector().size();
+    // ((is_scatter) ? params.dst_bufs : params.src_bufs) = {buf.flatten().index({at::indexing::Slice(0, slice_size)})};
+    // }
   }
 
   if (my_device_index == root) {
     for (auto i : c10::irange(mesh.vector().size())) {
       std::vector<at::indexing::TensorIndex> indices(root_buf.dim(), at::indexing::Slice());
       indices[sharded_dim] = at::indexing::Slice(i*stride, (i+1)*stride);
-      // TODO: Keep only if branch after allocation fix merged. This keeps slice size the same. 
-      if (sharded_dim == 0) {
-        ((is_scatter)? params.src_bufs : params.dst_bufs).push_back(root_buf.index(indices).contiguous());
-      } else {
-        ((is_scatter)? params.src_bufs : params.dst_bufs).push_back(root_buf.index(indices).flatten().contiguous());
-      }
+      ((is_scatter)? params.src_bufs : params.dst_bufs).push_back(root_buf.index(indices).squeeze(sharded_dim).contiguous());
+      // ((is_scatter)? params.src_bufs : params.dst_bufs).push_back(root_buf.index(indices).flatten().contiguous());
     }
     // The scatter/gather semantics imposes the root to be both
     // sender and receiver. If the root is not in the mesh, we thus
@@ -153,6 +145,8 @@ void lowerToScatter(
     DeviceIdxType my_device_index,
     const DeviceMesh& sender_mesh,
     const DeviceMesh& receiver_mesh,
+    TensorView* input,
+    TensorView* output,
     int output_sharded_dim,
     at::Tensor input_tensor,
     at::Tensor output_tensor,
@@ -162,6 +156,8 @@ void lowerToScatter(
   if (!isDeviceInvolved(my_device_index, root, receiver_mesh)) {
     return;
   }
+  std::cout << "Scatter input tv " << input->toString() << std::endl;
+  std::cout << "Scatter output tv " << output->toString() << std::endl;
   auto params = createParamsForGatherScatter(
       my_device_index, root, receiver_mesh, output_sharded_dim, input_tensor, output_tensor, true);
   comms.push_back(std::make_shared<Scatter>(std::move(params)));
@@ -204,23 +200,29 @@ void lowerToAllgather(
     return;
   }
 
-  std::cout << my_device_index << " Inserting allgather" << std::endl;
-
-  // std::vector<at::indexing::TensorIndex> index_slice(output_tensor.dim(), at::indexing::Slice());
-  // index_slice[input_sharded_dim] = 0;
-  // auto slice_size = output_tensor.index(index_slice).numel();
-
-  int slice_size = output_tensor.numel() / mesh.vector().size();
-  std::cout << "Size of allgather slice " << slice_size << std::endl;
+  // int slice_size = output_tensor.numel() / mesh.vector().size();
   std::cout << "allgather input " << input_tensor << std::endl;
+  std::cout << "allgather output size" << output_tensor.sizes() << std::endl;
+
+  std::vector<int64_t> slice_shape;
+  for (auto i = 1; i < output_tensor.dim(); i++) {
+    slice_shape.push_back(output_tensor.size(i));
+  }
 
   CommParams params;
   params.team = mesh.vector();
   for (auto i : c10::irange(mesh.vector().size())) {
+    // allgather writes to output tensor with the device sharded axes pushed
+    // to the outermost axes for contiguity. 
+    // See csrc/multidevice/executor.cpp handle(PipelineCommunication)
+    std::vector<at::indexing::TensorIndex> indices(output_tensor.dim(), at::indexing::Slice());
+    indices[0] = at::indexing::Slice(i, i+1);
     params.dst_bufs.push_back(
-        at::flatten(output_tensor).slice(0, i*slice_size, (i+1)*slice_size));
+      output_tensor.index(indices).view(at::IntArrayRef(slice_shape)));
+      // at::flatten(output_tensor).slice(0, i*slice_size, (i+1)*slice_size));
   }
-  params.src_bufs = {at::flatten(input_tensor).slice(0, 0, slice_size)};
+  params.src_bufs = {input_tensor};
+  // params.src_bufs = {at::flatten(input_tensor).slice(0, 0, slice_size)};
 
   comms.push_back(std::make_shared<Allgather>(std::move(params)));
 }
@@ -390,6 +392,7 @@ void lowerToAllreduce(
   params.redOp = getC10dReduceOpType(op_type);
   params.team = mesh.vector();
   params.dst_bufs = {output_tensor};
+  // TODO: is the buffer sliced with allreduce?
   auto sliced_buf = input_tensor.index({0, "..."});
   params.src_bufs = {sliced_buf};
 
@@ -399,6 +402,7 @@ void lowerToAllreduce(
 void lowerToReduceScatter(
     DeviceIdxType my_device_index,
     const DeviceMesh& mesh,
+    int output_sharded_dim,
     at::Tensor input_tensor,
     at::Tensor output_tensor,
     BinaryOpType op_type,
@@ -409,8 +413,10 @@ void lowerToReduceScatter(
   CommParams params;
   params.redOp = getC10dReduceOpType(op_type);
   params.team = mesh.vector();
+  // TODO:
   params.dst_bufs = {output_tensor.index({0, "..."})};
   for (int i: params.team) {
+    // TODO:
     auto sliced_buf = input_tensor.index({0, i, "..."});
     params.src_bufs.push_back(sliced_buf);
   }
@@ -424,7 +430,7 @@ bool checkShardingSizes(at::Tensor& tensor, TensorView* tv, const DeviceMesh& me
     int sharded_dim = dimWithParallelType(tv, ParallelType::DIDx);
     auto sharded_dim_extent = tv->getLeafDomain()[sharded_dim]->extent();
     if (sharded_dim_extent->isSymbolic()) {
-      // TODO: this is only the correct access to check on tensor if no splits/merges happen in axes before sharded_dim.
+      // TODO: Assumes no splits/merges happen in axes before sharded_dim.
       return  static_cast<size_t>(tensor.size(sharded_dim)) == mesh.vector().size();
     }
     return static_cast<size_t>(sharded_dim_extent->value()) == mesh.vector().size();
@@ -476,23 +482,23 @@ std::vector<std::shared_ptr<Communication>> lowerCommunication(
     original_expr," to communication is not supported");
   bool is_reduction = original_expr->isA<ReductionOp>();
 
-  NVF_ERROR(
-      !is_input_sharded ||
-      !input_tensor.numel() ||
-      checkShardingSizes(input_tensor, input_tv, sender_mesh),
-      "the size of the mesh ",
-      sender_mesh.vector().size(),
-      " doesn't match the size of the tensor ",
-      input_tensor.size(input_sharded_dim));
-  NVF_ERROR(
-      !is_output_sharded ||
-      !output_tensor.numel() ||
-      is_reduction ||
-      checkShardingSizes(output_tensor, output_tv, receiver_mesh),
-      "the size of the mesh",
-      receiver_mesh.vector().size(),
-      " doesn't match the size of the tensor ",
-      output_tensor.size(output_sharded_dim));
+  // NVF_ERROR(
+  //     !is_input_sharded ||
+  //     !input_tensor.numel() ||
+  //     checkShardingSizes(input_tensor, input_tv, sender_mesh),
+  //     "the size of the mesh ",
+  //     sender_mesh.vector().size(),
+  //     " doesn't match the size of the tensor ",
+  //     input_tensor.size(input_sharded_dim));
+  // NVF_ERROR(
+  //     !is_output_sharded ||
+  //     !output_tensor.numel() ||
+  //     is_reduction ||
+  //     checkShardingSizes(output_tensor, output_tv, receiver_mesh),
+  //     "the size of the mesh",
+  //     receiver_mesh.vector().size(),
+  //     " doesn't match the size of the tensor ",
+  //     output_tensor.size(output_sharded_dim-1));
   if (is_reduction) {
     BinaryOpType op_type = output_tv->definition()->as<ReductionOp>()->getReductionOpType();
     NVF_ERROR(is_input_sharded, "the comm input must be sharded in case of reduce.",
@@ -501,6 +507,7 @@ std::vector<std::shared_ptr<Communication>> lowerCommunication(
       if (receiver_mesh == sender_mesh) {
         lowerToReduceScatter(my_device_index,
                       sender_mesh,
+                      output_sharded_dim,
                       input_tensor,
                       output_tensor,
                       op_type,
@@ -530,6 +537,8 @@ std::vector<std::shared_ptr<Communication>> lowerCommunication(
           my_device_index,
           sender_mesh,
           receiver_mesh,
+          input_tv,
+          output_tv,
           output_sharded_dim,
           input_tensor,
           output_tensor,

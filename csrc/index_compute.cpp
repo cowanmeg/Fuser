@@ -1824,6 +1824,7 @@ std::vector<Val*> Index::getNonGlobalProducerStridedIndices(
 
       alloc_ext_j = getHaloExtentOfRootAxis(alloc_dom[j], alloc_ext_j);
 
+      // TODO: This might not be needed...
       if (alloc_dom[j]->isDeviceDim() || zero_domain_map.count(alloc_dom[j]) == 0 ||
           is_mma_allocation(alloc_dom[j])) {
         if (stride == nullptr) {
