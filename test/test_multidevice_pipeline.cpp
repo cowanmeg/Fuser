@@ -26,6 +26,7 @@
 #include <kernel_ir.h>
 #include <mma_type.h>
 #include <multidevice/lower_resharding_expr.h>
+#include <multidevice/utils.h>
 #include <ops/all_ops.h>
 #include <root_domain_map.h>
 #include <scheduler/all_schedulers.h>
@@ -54,6 +55,9 @@ using namespace at::indexing;
 */
 
 TEST_F(PipelineTest, Pipeline) {
+  if (communicator->size() < 6 || torch::cuda::device_count() < 6) {
+    GTEST_SKIP() << "This test needs at least 6 GPUs and 6 ranks";
+  }
   const std::vector<int64_t> input_shape1 = {6, 7};
   const std::vector<int64_t> input_shape2 = {3, 5, 2};
   // ===========================================================
@@ -476,15 +480,15 @@ TEST_F(PipelineTest, matmul_summa) {
   d->axis(3)->parallelize(ParallelType::DIDy);
   fusion->addOutput(d);
 
-  // fusion->print();
-
+  // TODO: Remove when we support 2D sharding
+  unshard(fusion.get());
+ 
   inputs = {
       at::randn(a_extents, tensor_options),
       at::randn(b_extents, tensor_options)};
 
-  FusionExecutor fe;
-  fe.compileFusion(fusion.get(), inputs);
-  auto ref_outputs = fe.runFusion(inputs);
+  FusionExecutorCache executor_cache(std::move(fusion));
+  auto ref_outputs = executor_cache.runFusionWithInputs(inputs);
 
   // std::cout << "a (concrete inputs): \n"
   //           << inputs.at(0) << "\nb (concrete inputs): \n"

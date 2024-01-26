@@ -21,7 +21,6 @@ bool isSharded(TensorView* tv) {
     is_sharded.push_back(id->isDeviceDim());
   }
   // Currently, only the most external dim is allowed to be sharded
-  NVF_ERROR(tv->getMaybeRFactorDomain() == tv->getLeafDomain());
   for (auto i : c10::irange(1, is_sharded.size())) {
     NVF_ERROR(
         !is_sharded.at(i),
@@ -115,6 +114,7 @@ void unshard(TensorView* tv) {
       id->parallelize(ParallelType::Serial);
     }
   }
+  tv->setDeviceMesh({});
 }
 
 void unshard(Fusion* fusion) {
@@ -135,6 +135,26 @@ std::set<DeviceIdxType> involvedDevices(Expr* expr) {
     }
   }
   return ret;
+}
+
+int dimWithParallelType(TensorView* tv, ParallelType pt) {
+  for (size_t i = 0; i < tv->nDims(); ++i) {
+    if (tv->axis(i)->getParallelType() == pt) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+std::vector<int64_t> unshardedSizes(TensorView* tv, c10::IntArrayRef sharded_sizes) {
+  int sharded_axis = dimWithParallelType(tv, ParallelType::DIDx);
+  std::vector<int64_t> unsharded_sizes;
+    std::copy(sharded_sizes.begin(), sharded_sizes.end(), std::back_inserter(unsharded_sizes));
+  if (sharded_axis > -1) {
+    int num_devices = tv->getDeviceMesh().vector().size();
+    unsharded_sizes[sharded_axis] = num_devices;
+  }
+  return unsharded_sizes;
 }
 
 } // namespace nvfuser

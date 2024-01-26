@@ -18,9 +18,13 @@
 
 namespace nvfuser {
 
-class ShardingTest : public MultiDeviceTest {};
+class ShardingTest
+    : public MultiDeviceTest,
+      public ::testing::WithParamInterface<bool> {
+};
 
-TEST_F(ShardingTest, UnshardedGlobalInput) {
+TEST_P(ShardingTest, UnshardedGlobalInput) {
+  auto concreteTV = GetParam();
   int sharded_dim = 0;
   std::unique_ptr<Fusion> fusion = std::make_unique<Fusion>();
   FusionGuard fg(fusion.get());
@@ -28,9 +32,10 @@ TEST_F(ShardingTest, UnshardedGlobalInput) {
   std::vector<int64_t> devices(num_devices);
   std::iota(devices.begin(), devices.end(), 0);
   DeviceMesh mesh(devices);
-  std::vector<int64_t> input_size = {num_devices, 3};
+  std::vector<int64_t> input_size = {3, 3};
+  input_size[sharded_dim] = num_devices;
 
-  TensorView* tv0 = makeConcreteTensor(input_size);
+  TensorView* tv0 = concreteTV ? makeConcreteTensor(input_size) : makeContigTensor(2);
   TensorView* tv1 = add(tv0, tv0);
   TensorView* tv2 = set(tv1);
   TensorView* tv3 = add(tv2, tv2);
@@ -41,7 +46,7 @@ TEST_F(ShardingTest, UnshardedGlobalInput) {
 
   // TODO: split
   // tv2->split(sharded_dim, num_devices, false);
-  tv2->axis(0)->parallelize(ParallelType::DIDx);
+  tv2->axis(sharded_dim)->parallelize(ParallelType::DIDx);
   // tv3->split(sharded_dim, num_devices, false);
   tv3->axis(sharded_dim)->parallelize(ParallelType::DIDx);
 
@@ -60,7 +65,8 @@ TEST_F(ShardingTest, UnshardedGlobalInput) {
       runtime.fusion(), outputs, inputs, {ref_outputs}, __LINE__, __FILE__);
 }
 
-TEST_F(ShardingTest, ShardGlobalInput) {
+TEST_P(ShardingTest, ShardGlobalInput) {
+  auto concreteTV = GetParam();
   int sharded_dim = 0;
   std::unique_ptr<Fusion> fusion = std::make_unique<Fusion>();
   FusionGuard fg(fusion.get());
@@ -68,9 +74,10 @@ TEST_F(ShardingTest, ShardGlobalInput) {
   std::vector<int64_t> devices(num_devices);
   std::iota(devices.begin(), devices.end(), 0);
   DeviceMesh mesh(devices);
-  std::vector<int64_t> unsharded_input_size = {num_devices, 3, 2};
+  std::vector<int64_t> unsharded_input_size = {5, 3, 2};
+  unsharded_input_size[sharded_dim] = num_devices;
 
-  TensorView* tv0 = makeConcreteTensor(unsharded_input_size);
+  TensorView* tv0 = concreteTV ? makeConcreteTensor(unsharded_input_size) : makeContigTensor(3);
   TensorView* tv1 = set(tv0);
   TensorView* tv2 = add(tv1, tv1);
   fusion->addInput(tv0);
@@ -94,5 +101,10 @@ TEST_F(ShardingTest, ShardGlobalInput) {
       runtime.fusion(), outputs, inputs, {ref_outputs}, __LINE__, __FILE__);
 }
 
+INSTANTIATE_TEST_SUITE_P(
+    NonoutermostAxis,
+    ShardingTest,
+    ::testing::Values(true, false)
+);
 } // namespace nvfuser
 #endif

@@ -35,4 +35,10 @@ int64_t requestedNumberOfDevices(Fusion*);
 
 void unshard(Fusion*);
 void unshard(TensorView*);
+
+// Returns the axis that is parallelized with type
+int dimWithParallelType(TensorView*, ParallelType);
+
+// returns the unsharded tensor size given sharded size and tv
+std::vector<int64_t> unshardedSizes(TensorView*, c10::IntArrayRef);
 } // namespace nvfuser
