@@ -526,7 +526,6 @@ list(APPEND JIT_TEST_SRCS
   ${NVFUSER_ROOT}/tests/cpp/test_resize.cpp
   ${NVFUSER_ROOT}/tests/cpp/test_reduction_pointwise.cpp
   ${NVFUSER_ROOT}/tests/cpp/test_scalar_hoisting.cpp
-  ${NVFUSER_ROOT}/tests/cpp/test_sdpa_node.cpp
   ${NVFUSER_ROOT}/tests/cpp/test_segmentation.cpp
   ${NVFUSER_ROOT}/tests/cpp/test_serial_gridreduce.cpp
   ${NVFUSER_ROOT}/tests/cpp/test_sharding.cpp
@@ -699,6 +698,36 @@ if(BUILD_NVFUSER_BENCHMARK)
     codegen_internal
   )
   add_dependencies(nvfuser_bench flatc build_flatbuffer_config)
+
+  # multidevice benchmarks
+  set(MULTIDEVICE_BENCHMARK_SRCS)
+  list(APPEND MULTIDEVICE_BENCHMARK_SRCS
+    ${NVFUSER_ROOT}/benchmarks/cpp/multidevice_matmul_benchmark.cpp
+    ${NVFUSER_ROOT}/tests/cpp/utils.cpp
+  )
+
+  add_executable(nvfuser_multidevice_bench ${MULTIDEVICE_BENCHMARK_SRCS})
+  set_target_properties(nvfuser_multidevice_bench PROPERTIES
+    C_STANDARD ${NVFUSER_C_STANDARD}
+    CUDA_STANDARD ${NVFUSER_CUDA_STANDARD}
+    CXX_STANDARD ${NVFUSER_CPP_STANDARD}
+    CXX_STANDARD_REQUIRED ON
+    CXX_VISIBILITY_PRESET hidden
+    POSITION_INDEPENDENT_CODE Yes
+    VISIBILITY_INLINES_HIDDEN Yes
+  )
+
+  target_include_directories(nvfuser_multidevice_bench SYSTEM PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/benchmark/include
+    ${CMAKE_SOURCE_DIR}/third_party/flatbuffers/include
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+  )
+  target_include_directories(nvfuser_multidevice_bench PUBLIC ${NVFUSER_ROOT})
+  target_link_libraries(nvfuser_multidevice_bench PRIVATE
+    benchmark::benchmark
+    codegen_internal
+  )
+  add_dependencies(nvfuser_multidevice_bench flatc build_flatbuffer_config)
 
   if(NOT MSVC)
     target_compile_options(nvfuser_bench PRIVATE
