@@ -5,6 +5,7 @@
  * SPDX-License-Identifier: BSD-3-Clause
  */
 // clang-format on
+#include <filesystem>
 #include <fstream>
 #include <functional>
 #include <iostream>
@@ -292,7 +293,7 @@ class DistributedMatmulTest {
     std::vector<int> b_shape = {K, N};
 
     TensorView* a = makeContigTensor(3, DataType::Half); // (Mo,Mi,K)
-    TensorView* b = makeContigTensor(2, DataType::Half); // (N,K)
+    TensorView* b = makeContigTensor(2, DataType::Half); // (K,N)
     TensorView* c0 = matmul(a, b);
     TensorView* c = set(c0);
 
@@ -309,7 +310,7 @@ class DistributedMatmulTest {
       tv->axis(0)->parallelize(ParallelType::DIDx);
     }
 
-    auto [in0, in1, out] = getInputsAndReferenceOutputs(MmaLayout::TN, M, N, K);
+    auto [in0, in1, out] = getInputsAndReferenceOutputs(MmaLayout::TT, M, N, K);
     in0 = in0.view({Mo, Mi, K});
     out = out.view({Mo, Mi, N});
 
@@ -578,7 +579,7 @@ class DistributedMatmulTest {
 
   stats NoComms_Baseline(int M, int N, int K) {
     int Mo = num_devices_;
-    int Mi = M / Mo;
+    int Mi = M / num_devices_;
     auto [in0, in1, out] = getInputsAndReferenceOutputs(MmaLayout::TT, Mi, N, K);
 
     auto output = at::matmul(in0, in1);
@@ -590,7 +591,7 @@ class DistributedMatmulTest {
     auto time =  std::chrono::duration_cast< std::chrono::microseconds>(end - start).count();
     double average_time = time / double(repeats_);
     stats entry;
-    entry.description = "pytorch eager";
+    entry.description = "aten";
     entry.collective = "None";
     entry.average_time = average_time;
     entry.M_local = Mi;
@@ -601,7 +602,7 @@ class DistributedMatmulTest {
 
   stats AllGather_Baseline(int M, int N, int K) {
     int Mo = num_devices_;
-    int Mi = M / Mo;
+    int Mi = M / num_devices_;
     auto [in0, in1, out] = getInputsAndReferenceOutputs(MmaLayout::TT, Mi, N, K);
     
     auto mm = at::matmul(in0, in1);
@@ -619,7 +620,7 @@ class DistributedMatmulTest {
     auto time =  std::chrono::duration_cast< std::chrono::microseconds>(end - start).count();
     double average_time = time / double(repeats_);
     stats entry;
-    entry.description = "pytorch eager";
+    entry.description = "aten";
     entry.collective = "AllGather";
     entry.average_time = average_time;
     entry.M_local = Mi;
@@ -651,7 +652,7 @@ class DistributedMatmulTest {
     auto time =  std::chrono::duration_cast< std::chrono::microseconds>(end - start).count();
     double average_time = time / double(repeats_);
     stats entry;
-    entry.description = "pytorch eager";
+    entry.description = "aten";
     entry.collective = "AllReduce";
     entry.average_time = average_time;
     entry.M_local = M;
@@ -683,7 +684,7 @@ class DistributedMatmulTest {
     auto time =  std::chrono::duration_cast< std::chrono::microseconds>(end - start).count();
     double average_time = time / double(repeats_);
     stats entry;
-    entry.description = "pytorch eager";
+    entry.description = "aten";
     entry.collective = "ReduceScatter";
     entry.average_time = average_time;
     entry.M_local = M;
@@ -704,11 +705,16 @@ std::string toString(CommunicatorBackend b) {
   }
 }
 
-void writeCSV(std::vector<stats>& data, std::string fname, int64_t deviceId) {
+void writeCSV(std::vector<stats>& data, std::string prefix, int64_t deviceId) {
   std::stringstream ss;
-  ss << fname << "_" << deviceId << ".csv";
-  std::ofstream file(ss.str());
-  file << "Description, Collective, Backend, M, N, K, M_local, N_local, K_local, average time (us)\n";
+  ss << prefix << "_" << deviceId << ".csv";
+  std::string fname = ss.str();
+
+  std::ofstream file(fname, std::ios::app);
+  if (std::filesystem::file_size(fname) == 0) {
+    file << "Description, Collective, Backend, M, N, K, M_local, N_local, K_local, average time (us)\n";
+  }
+
   for (const auto& entry : data) {
     file << entry.description << ", " << entry.collective << ", " << toString(entry.backend) << ", ";
     file << entry.M << ", " << entry.N << ", " << entry.K << ", "; 
@@ -721,57 +727,71 @@ typedef stats (DistributedMatmulTest::*DistributedMatmulFn) (int M, int N, int K
 
 int main(int argc, char* argv[]) {
   // Parsing command line options
+  std::string fname(argv[1]);
+  std::string version(argv[2]); // none, allgather, allreduce, reducescatter
+  std::string method(argv[3]); // nvfuser, nvfuser_aten, aten
 
-  std::string versions(argv[1]);
-  std::string fname(argv[2]);
-  int M_start = std::stoi(argv[3]);
-  int M_end = std::stoi(argv[4]);
-  int N_start = std::stoi(argv[5]);
-  int N_end = std::stoi(argv[6]);
-  int K_start = std::stoi(argv[7]);
-  int K_end = std::stoi(argv[8]);
-
-  std::vector<DistributedMatmulFn> matmuls;
-  if (versions == "all") {
-    matmuls = {&DistributedMatmulTest::nvFuser_NoComms,
+  std::vector<int64_t> sizes;
+  for (int i = 4; i < argc; i++) {
+    sizes.push_back(std::stoi(argv[i]));
+  }
+  std::cout << std::endl;
+  std::unordered_map<std::string, std::vector<DistributedMatmulFn>> fns;
+  fns["none"] = {
+    &DistributedMatmulTest::nvFuser_NoComms,
+    &DistributedMatmulTest::nvFuserATen_NoComms,
+    &DistributedMatmulTest::NoComms_Baseline};
+  fns["allgather"] = {
+    &DistributedMatmulTest::nvFuser_AllGather,
+    &DistributedMatmulTest::nvFuserATen_AllGather,
+    &DistributedMatmulTest::AllGather_Baseline};
+  fns["allreduce"] = {
+    &DistributedMatmulTest::nvFuser_AllReduce,
+    &DistributedMatmulTest::nvFuserATen_AllReduce,
+    &DistributedMatmulTest::AllReduce_Baseline
+  };
+  fns["reducescatter"] = {
+    &DistributedMatmulTest::nvFuser_ReduceScatter,
+    &DistributedMatmulTest::nvFuserATen_ReduceScatter,
+    &DistributedMatmulTest::ReduceScatter_Baseline
+  };
+  fns["nvfuser"] = {
+    &DistributedMatmulTest::nvFuser_NoComms,
     &DistributedMatmulTest::nvFuser_AllGather,
     &DistributedMatmulTest::nvFuser_AllReduce,
-    &DistributedMatmulTest::nvFuser_ReduceScatter,
+    &DistributedMatmulTest::nvFuser_ReduceScatter
+  };
+  fns["nvfuser_aten"] = {
     &DistributedMatmulTest::nvFuserATen_NoComms,
     &DistributedMatmulTest::nvFuserATen_AllGather,
     &DistributedMatmulTest::nvFuserATen_AllReduce,
-    &DistributedMatmulTest::nvFuserATen_ReduceScatter,
+    &DistributedMatmulTest::nvFuserATen_ReduceScatter
+  };
+  fns["aten"] = {
     &DistributedMatmulTest::NoComms_Baseline,
     &DistributedMatmulTest::AllGather_Baseline,
     &DistributedMatmulTest::AllReduce_Baseline,
-    &DistributedMatmulTest::ReduceScatter_Baseline};
-  } else if (versions == "none") {
-    matmuls = {&DistributedMatmulTest::nvFuser_NoComms,
-    &DistributedMatmulTest::nvFuserATen_NoComms,
-    &DistributedMatmulTest::NoComms_Baseline};
-  } else if (versions == "AllGather") {
-    matmuls = {&DistributedMatmulTest::nvFuser_AllGather,
-    &DistributedMatmulTest::nvFuserATen_AllGather,
-    &DistributedMatmulTest::AllGather_Baseline};
-  } else if (versions == "AllReduce") {
-    matmuls = {&DistributedMatmulTest::nvFuser_AllReduce,
-    &DistributedMatmulTest::nvFuserATen_AllReduce,
-    &DistributedMatmulTest::AllReduce_Baseline};
-  } else if (versions == "ReduceScatter") {
-    matmuls = {&DistributedMatmulTest::nvFuser_ReduceScatter,
-    &DistributedMatmulTest::nvFuserATen_ReduceScatter,
-    &DistributedMatmulTest::ReduceScatter_Baseline};
+    &DistributedMatmulTest::ReduceScatter_Baseline
+  };
+
+  std::vector<DistributedMatmulFn> matmuls;
+  for (auto i : fns[version]) {
+    auto vec = fns[method];
+    if (std::find(vec.begin(), vec.end(), i) != vec.end()) {
+      matmuls.push_back(i);
+    }
   }
+  
 
   DistributedMatmulTest mm;
   std::vector<stats> data;
-  auto backends = {CommunicatorBackend::nccl, CommunicatorBackend::ucc};
+  auto backends = {CommunicatorBackend::nccl}; //, CommunicatorBackend::ucc};
   for (auto backend : backends) {
     mm.communicator_->setDefaultBackend(backend);
     for (auto matmul : matmuls) {
-      for (auto M = M_start; M < M_end; M *= 2) {
-        for (auto N = N_start; N < N_end; N *= 2) {
-          for (auto K = K_start; K < K_end; K *= 2) {
+      for (auto M = sizes[0]; M <= sizes[3 % sizes.size()]; M *= 2) {
+        for (auto N = sizes[1]; N <= sizes[4 % sizes.size()]; N *= 2) {
+          for (auto K = sizes[2]; K <= sizes[5 % sizes.size()]; K *= 2) {
             stats entry = std::invoke(matmul, mm, M, N, K);
             entry.backend = backend;
             entry.M = M;
