@@ -609,12 +609,14 @@ class DistributedMatmulTest {
     at::Tensor ag = at::empty({M, N}, mm.options());
     auto work = communicator_->getWorld()->_allgather_base(ag, mm, {});
     work->wait();
+    cudaStreamSynchronize(c10::cuda::getCurrentCUDAStream());
 
     auto start = std::chrono::high_resolution_clock::now();
     for (auto i : c10::irange(repeats_)) {
       mm = at::matmul(in0, in1);
       work = communicator_->getWorld()->_allgather_base(ag, mm, {});
       work->wait();
+      cudaStreamSynchronize(c10::cuda::getCurrentCUDAStream());
     }
     auto end = std::chrono::high_resolution_clock::now();
     auto time =  std::chrono::duration_cast< std::chrono::microseconds>(end - start).count();
@@ -640,6 +642,7 @@ class DistributedMatmulTest {
 
     auto work = communicator_->getWorld()->allreduce(inputs);
     work->wait();
+    cudaStreamSynchronize(c10::cuda::getCurrentCUDAStream());
 
     auto start = std::chrono::high_resolution_clock::now();
     for (auto i : c10::irange(repeats_)) {
@@ -647,6 +650,7 @@ class DistributedMatmulTest {
       inputs[0] = mm;
       work = communicator_->getWorld()->allreduce(inputs);
       work->wait();
+      cudaStreamSynchronize(c10::cuda::getCurrentCUDAStream());
     }
     auto end = std::chrono::high_resolution_clock::now();
     auto time =  std::chrono::duration_cast< std::chrono::microseconds>(end - start).count();
@@ -672,6 +676,7 @@ class DistributedMatmulTest {
     std::vector<at::Tensor> outputs = {at::empty({Mi, N}, mm.options())};
     auto work = communicator_->getWorld()->reduce_scatter(outputs, inputs);
     work->wait();
+    cudaStreamSynchronize(c10::cuda::getCurrentCUDAStream());
 
     auto start = std::chrono::high_resolution_clock::now();
     for (auto i : c10::irange(repeats_)) {
@@ -679,6 +684,7 @@ class DistributedMatmulTest {
       inputs[0] = mm.chunk(num_devices_);
       work = communicator_->getWorld()->reduce_scatter(outputs, inputs);
       work->wait();
+      cudaStreamSynchronize(c10::cuda::getCurrentCUDAStream());
     }
     auto end = std::chrono::high_resolution_clock::now();
     auto time =  std::chrono::duration_cast< std::chrono::microseconds>(end - start).count();
