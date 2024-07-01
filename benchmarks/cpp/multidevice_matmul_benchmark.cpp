@@ -49,7 +49,8 @@ class DistributedMatmulTest {
     communicator_ = new Communicator();
     num_devices_ = communicator_->size();
     mesh_ = DeviceMesh::createForNumDevices(num_devices_);
-    repeats_ = 5;
+    warmup_ = 25;
+    repeats_ = 100;
   }
 
   MultiDeviceExecutorParams executor_params_{
@@ -60,6 +61,7 @@ class DistributedMatmulTest {
   Communicator* communicator_;
   DeviceMesh mesh_;
   int repeats_;
+  int warmup_;
 
   std::tuple<at::Tensor, at::Tensor, at::Tensor> getInputsAndReferenceOutputs(
       MmaLayout layout,
@@ -147,7 +149,9 @@ class DistributedMatmulTest {
     auto expected_output = shardTensor(out, c);
     MultiDeviceExecutor runtime(std::move(fusion), *communicator_, executor_params_);
     // TODO validate the first run
-    auto outputs = runtime.runWithInput(inputs);
+    for (auto i : c10::irange(warmup_)) {
+      runtime.runWithInput(inputs);
+    }
     auto start = std::chrono::high_resolution_clock::now();
     for (auto i : c10::irange(repeats_)) {
       runtime.runWithInput(inputs);
@@ -205,7 +209,9 @@ class DistributedMatmulTest {
     auto expected_output = shardTensor(out, c);
     MultiDeviceExecutor runtime(std::move(fusion), *communicator_, executor_params_);
     // TODO validate the first run
-    auto outputs = runtime.runWithInput(inputs);
+    for (auto i : c10::irange(warmup_)) {
+      runtime.runWithInput(inputs);
+    }
     auto start = std::chrono::high_resolution_clock::now();
     for (auto i : c10::irange(repeats_)) {
       runtime.runWithInput(inputs);
@@ -263,7 +269,9 @@ class DistributedMatmulTest {
     std::vector<c10::IValue> inputs = {
         shardTensor(in0, a), in1};
     MultiDeviceExecutor runtime(std::move(fusion), *communicator_, executor_params_);
-    auto outputs = runtime.runWithInput(inputs);
+    for (auto i : c10::irange(warmup_)) {
+      runtime.runWithInput(inputs);
+    }
     auto start = std::chrono::high_resolution_clock::now();
     for (auto i : c10::irange(repeats_)) {
       runtime.runWithInput(inputs);
@@ -317,7 +325,9 @@ class DistributedMatmulTest {
     std::vector<c10::IValue> inputs = {
         shardTensor(in0, a), in1};
     MultiDeviceExecutor runtime(std::move(fusion), *communicator_, executor_params_);
-    auto outputs = runtime.runWithInput(inputs);
+    for (auto i : c10::irange(warmup_)) {
+      runtime.runWithInput(inputs);
+    }
     auto start = std::chrono::high_resolution_clock::now();
     for (auto i : c10::irange(repeats_)) {
       runtime.runWithInput(inputs);
@@ -376,7 +386,9 @@ class DistributedMatmulTest {
         shardTensor(in0, a),
         shardTensor(in1, b)};
     MultiDeviceExecutor runtime(std::move(fusion), *communicator_, executor_params_);
-    auto outputs = runtime.runWithInput(inputs);
+    for (auto i : c10::irange(warmup_)) {
+      runtime.runWithInput(inputs);
+    }
     auto start = std::chrono::high_resolution_clock::now();
     for (auto i : c10::irange(repeats_)) {
       runtime.runWithInput(inputs);
@@ -413,7 +425,6 @@ class DistributedMatmulTest {
 
     std::vector<TensorView*> all_tvs = {a, b, c0, c};
     setDeviceMesh(all_tvs);
-    // Parallelize K on all inputs and intermediates.
     auto all_sharded_tvs = {a, b, c0};
     for (auto tv : all_sharded_tvs) {
       tv->axis(0)->parallelize(ParallelType::DIDx);
@@ -426,7 +437,9 @@ class DistributedMatmulTest {
         shardTensor(in0, a),
         shardTensor(in1, b)};
     MultiDeviceExecutor runtime(std::move(fusion), *communicator_, executor_params_);
-    auto outputs = runtime.runWithInput(inputs);
+    for (auto i : c10::irange(warmup_)) {
+      runtime.runWithInput(inputs);
+    }
     auto start = std::chrono::high_resolution_clock::now();
     for (auto i : c10::irange(repeats_)) {
       runtime.runWithInput(inputs);
@@ -496,7 +509,9 @@ class DistributedMatmulTest {
         shardTensor(out, c).view({1, Mi, N});
 
     MultiDeviceExecutor runtime(std::move(fusion), *communicator_, executor_params_);
-    auto outputs = runtime.runWithInput(inputs);
+    for (auto i : c10::irange(warmup_)) {
+      runtime.runWithInput(inputs);
+    }
     auto start = std::chrono::high_resolution_clock::now();
     for (auto i : c10::irange(repeats_)) {
       runtime.runWithInput(inputs);
@@ -559,7 +574,9 @@ class DistributedMatmulTest {
         shardTensor(out, c).view({1, Mi, N});
 
     MultiDeviceExecutor runtime(std::move(fusion), *communicator_, executor_params_);
-    auto outputs = runtime.runWithInput(inputs);
+    for (auto i : c10::irange(warmup_)) {
+      runtime.runWithInput(inputs);
+    }
     auto start = std::chrono::high_resolution_clock::now();
     for (auto i : c10::irange(repeats_)) {
       runtime.runWithInput(inputs);
@@ -583,6 +600,9 @@ class DistributedMatmulTest {
     auto [in0, in1, out] = getInputsAndReferenceOutputs(MmaLayout::TT, Mi, N, K);
 
     auto output = at::matmul(in0, in1);
+    for (auto i : c10::irange(warmup_-1)) {
+      at::matmul(in0, in1);
+    }
     auto start = std::chrono::high_resolution_clock::now();
     for (auto i : c10::irange(repeats_)) {
       at::matmul(in0, in1);
@@ -610,6 +630,12 @@ class DistributedMatmulTest {
     auto work = communicator_->getWorld()->_allgather_base(ag, mm, {});
     work->wait();
     cudaStreamSynchronize(c10::cuda::getCurrentCUDAStream());
+    for (auto i : c10::irange(warmup_-1)) {
+      mm = at::matmul(in0, in1);
+      work = communicator_->getWorld()->_allgather_base(ag, mm, {});
+      work->wait();
+      cudaStreamSynchronize(c10::cuda::getCurrentCUDAStream());
+    }
 
     auto start = std::chrono::high_resolution_clock::now();
     for (auto i : c10::irange(repeats_)) {
@@ -634,14 +660,30 @@ class DistributedMatmulTest {
   stats AllReduce_Baseline(int M, int N, int K) {
     int Ko = num_devices_;
     int Ki = K / Ko;
-    auto [in0, in1, out] = getInputsAndReferenceOutputs(MmaLayout::TT, M, N, Ki);
-    
-    auto mm = at::matmul(in0, in1);
-    at::Tensor ar = at::empty({M, N}, mm.options());
-    std::vector<at::Tensor> inputs{mm};
+    at::manual_seed(0);
+    auto [in0, in1, out] = getInputsAndReferenceOutputs(MmaLayout::TT, M, N, K);
+    auto d = deviceId();
+    in0 = in0.slice(1, d*Ki, (d+1)*Ki).contiguous();
+    in1 = in1.slice(0, d*Ki, (d+1)*Ki).contiguous();
+   
 
+    auto mm = at::matmul(in0, in1);
+    auto output_tensor = mm.clone();
+    std::vector<at::Tensor> inputs{output_tensor};
     auto work = communicator_->getWorld()->allreduce(inputs);
     work->wait();
+    cudaStreamSynchronize(c10::cuda::getCurrentCUDAStream());
+  
+    auto check = out.allclose(inputs[0].to(out.dtype()));
+    std::cout << "AllReduce baseline ok " << check << std::endl;
+    std::cout << "Max error " << out.sub(inputs[0]).abs().max() << std::endl;
+
+    for (auto i : c10::irange(warmup_-1)) {
+      mm = at::matmul(in0, in1);
+      inputs[0] = mm;
+      work = communicator_->getWorld()->allreduce(inputs);
+      work->wait();
+    }
     cudaStreamSynchronize(c10::cuda::getCurrentCUDAStream());
 
     auto start = std::chrono::high_resolution_clock::now();
@@ -650,8 +692,8 @@ class DistributedMatmulTest {
       inputs[0] = mm;
       work = communicator_->getWorld()->allreduce(inputs);
       work->wait();
-      cudaStreamSynchronize(c10::cuda::getCurrentCUDAStream());
     }
+    cudaStreamSynchronize(c10::cuda::getCurrentCUDAStream());
     auto end = std::chrono::high_resolution_clock::now();
     auto time =  std::chrono::duration_cast< std::chrono::microseconds>(end - start).count();
     double average_time = time / double(repeats_);
@@ -677,6 +719,13 @@ class DistributedMatmulTest {
     auto work = communicator_->getWorld()->reduce_scatter(outputs, inputs);
     work->wait();
     cudaStreamSynchronize(c10::cuda::getCurrentCUDAStream());
+    for (auto i : c10::irange(warmup_-1)) {
+      mm = at::matmul(in0, in1);
+      inputs[0] = mm.chunk(num_devices_);
+      work = communicator_->getWorld()->reduce_scatter(outputs, inputs);
+      work->wait();
+      cudaStreamSynchronize(c10::cuda::getCurrentCUDAStream());
+    }
 
     auto start = std::chrono::high_resolution_clock::now();
     for (auto i : c10::irange(repeats_)) {
@@ -791,7 +840,7 @@ int main(int argc, char* argv[]) {
 
   DistributedMatmulTest mm;
   std::vector<stats> data;
-  auto backends = {CommunicatorBackend::nccl}; //, CommunicatorBackend::ucc};
+  auto backends = {CommunicatorBackend::ucc, CommunicatorBackend::nccl};
   for (auto backend : backends) {
     mm.communicator_->setDefaultBackend(backend);
     for (auto matmul : matmuls) {
@@ -804,6 +853,8 @@ int main(int argc, char* argv[]) {
             entry.N = N;
             entry.K = K;
             data.push_back(entry);
+            std::cout << mm.deviceId() << ": finished " << entry.backend << " " << entry.average_time << std::endl;
+            cudaDeviceSynchronize();
           }
         }
       }
