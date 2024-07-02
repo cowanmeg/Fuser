@@ -203,6 +203,18 @@ bool checkCanSchedule(
     Fusion* fusion,
     SchedulerRuntimeInfo& runtime_info,
     HeuristicSummary* data_cache) {
+  
+  // The segmenter still tries SDPA+sSegmenterSet fusion which
+  // causes checkCanSchedule to build the computeAt map, so we force
+  // any fusion with SDPA with more than just SDPA to be skipped. 
+  if (fusion->exprs().size() > 1) {
+    for (auto expr : fusion->exprs()) {
+      if (expr->isA<SdpaFwdOp>()) {
+        return false;
+      }
+    }
+  }
+
   switch (sh) {
     case ScheduleHeuristic::NoOp:
       return checkCanSchedule<NoOpScheduler>(fusion, runtime_info, data_cache);
