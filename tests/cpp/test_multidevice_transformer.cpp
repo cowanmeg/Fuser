@@ -24,8 +24,7 @@ constexpr int64_t B = 2, E = 768, H = 16, S = 128;
 // Note: Sdpa probability is set to 0. Since the dropout mask is sharded it
 // throws off the seed offset between the sharded nvFuser program and the
 // unsharded reference.
-constexpr double kDropoutProb = 0.0, kParamScale = 0.02, kSdpaProb = 0.0,
-                 kSdpaScale = 1e-3;
+constexpr double kParamScale = 0.02, kSdpaProb = 0.0, kSdpaScale = 1e-3;
 
 class DistributedTransformerTest
     : public MultiDeviceTest,
@@ -117,12 +116,13 @@ std::vector<at::Tensor> reference_mlp(
     at::Tensor w0,
     at::Tensor b0,
     at::Tensor w1,
-    at::Tensor b1) {
+    at::Tensor b1,
+    const double dropout_prob) {
   auto at_dtype = w0.dtype();
   auto linear0 = at::linear(x, w0, b0);
   auto gelu = at::gelu(linear0.to(at::kFloat), "tanh").to(at_dtype);
   auto linear1 = at::linear(gelu, w1, b1).to(at::kFloat);
-  auto [dropout, mask] = at::native_dropout(linear1, kDropoutProb, true);
+  auto [dropout, mask] = at::native_dropout(linear1, dropout_prob, true);
   return {linear0, gelu, linear1, dropout, mask};
 }
 
@@ -131,7 +131,8 @@ std::vector<at::Tensor> reference_mha(
     at::Tensor w0,
     at::Tensor b0,
     at::Tensor w1,
-    at::Tensor b1) {
+    at::Tensor b1,
+    const double dropout_prob) {
   auto linear0 = at::linear(x, w0, b0);
   auto qkv = linear0.view({B, S, 3 * E}).split(E, 2);
   for (auto i = 0; i < 3; i++) {
@@ -143,7 +144,7 @@ std::vector<at::Tensor> reference_mha(
   // Reassemble heads (B, H, S, E/H) to (B, S, H, E/H) to (B, S, E)
   auto y = sdpa.transpose(1, 2).reshape({B * S, E});
   auto linear1 = at::linear(y, w1, b1).to(at::kFloat);
-  auto [dropout, mask] = at::native_dropout(linear1, kDropoutProb, true);
+  auto [dropout, mask] = at::native_dropout(linear1, dropout_prob, true);
   return {linear0, sdpa, linear1, dropout, mask};
 }
 
@@ -153,13 +154,14 @@ std::vector<at::Tensor> reference_mlp_backwards(
     at::Tensor mask,
     at::Tensor w0,
     at::Tensor w1,
-    at::Tensor linear0) {
+    at::Tensor linear0,
+    const double dropout_prob) {
   auto at_dtype = w0.dtype();
   auto gelu = at::gelu(linear0.to(at::kFloat), "tanh");
 
   // backwards pass
   auto dropout_grad =
-      at::native_dropout_backward(grad, mask, 1.0 / (1.0 - kDropoutProb));
+      at::native_dropout_backward(grad, mask, 1.0 / (1.0 - dropout_prob));
   auto dropout_grad_q = dropout_grad.to(at_dtype);
   auto matmul1_grad = at::matmul(dropout_grad_q, w1);
   auto matmul1_grad_w =
@@ -189,7 +191,8 @@ std::vector<at::Tensor> reference_mha_backwards(
     at::Tensor mask,
     at::Tensor w0,
     at::Tensor b0,
-    at::Tensor w1) {
+    at::Tensor w1,
+    const double dropout_prob) {
   auto at_dtype = w0.dtype();
   // recompute up to sdpa
   auto linear0 = at::linear(x, w0, b0);
@@ -218,7 +221,7 @@ std::vector<at::Tensor> reference_mha_backwards(
 
   // backwards pass
   auto dropout_grad =
-      at::native_dropout_backward(y_grad, mask, 1.0 / (1.0 - kDropoutProb));
+      at::native_dropout_backward(y_grad, mask, 1.0 / (1.0 - dropout_prob));
   auto dropout_grad_q = dropout_grad.to(at_dtype);
   auto linear1_x_grad = at::matmul(dropout_grad_q, w1);
   auto sdpa_output_reshape = sdpa_output.transpose(1, 2).view({B * S, E});
@@ -287,6 +290,7 @@ MLPResult mlp(
     TensorView* w1,
     TensorView* b1,
     const DeviceMesh& mesh,
+    const double dropout_prob,
     bool sequence_parallel = false) {
   const DataType dtype = w0->dtype();
 
@@ -319,8 +323,8 @@ MLPResult mlp(
   bcast_mask[matmul1->nDims() - 2] = false;
   TensorView* linear1 = add(matmul1, broadcast(b1, bcast_mask));
   // Dropout
-  Val* prob = IrBuilder::create<Val>(1.0 - kDropoutProb);
-  Val* scale = IrBuilder::create<Val>(1.0 / (1.0 - kDropoutProb));
+  Val* prob = IrBuilder::create<Val>(1.0 - dropout_prob);
+  Val* scale = IrBuilder::create<Val>(1.0 / (1.0 - dropout_prob));
   TensorView* dropout_result = dropout(linear1, prob, scale).output;
 
   // Tensor parallel shardings
@@ -356,6 +360,7 @@ MHAResult mha(
     TensorView* w1,
     TensorView* b1,
     const DeviceMesh& mesh,
+    const double dropout_prob,
     bool sequence_parallel = false) {
   const auto D = w0->axis(0)->extent()->value().as<int64_t>();
   auto dtype = w0->dtype();
@@ -409,8 +414,8 @@ MHAResult mha(
   bcast_mask[matmul1->nDims() - 2] = false;
   TensorView* linear1 = add(matmul1, broadcast(b1, bcast_mask));
   // Dropout
-  Val* prob = IrBuilder::create<Val>(1.0 - kDropoutProb);
-  Val* scale = IrBuilder::create<Val>(1.0 / (1.0 - kDropoutProb));
+  Val* prob = IrBuilder::create<Val>(1.0 - dropout_prob);
+  Val* scale = IrBuilder::create<Val>(1.0 / (1.0 - dropout_prob));
   TensorView* dropout_result = dropout(linear1, prob, scale).output;
 
   // Tensor parallel shardings
@@ -516,14 +521,15 @@ std::vector<TensorView*> mlp_backwards(
     TensorView* w0,
     TensorView* w1,
     TensorView* linear0,
-    const DeviceMesh& mesh) {
+    const DeviceMesh& mesh,
+    const double dropout_prob) {
   DataType dtype = w0->dtype();
 
   // Activation recomputation: Always recompute gelu
   TensorView* gelu = castOp(dtype, tanh_gelu(castOp(DataType::Float, linear0)));
 
   // Backwards pass
-  constexpr double kScale = 1.0 / (1.0 - kDropoutProb);
+  double kScale = 1.0 / (1.0 - dropout_prob);
   Val* dropout_scale = IrBuilder::create<Val>(kScale);
   TensorView* dropout_grad = dropout_backward(grad, mask, dropout_scale);
   auto linear1_grads = sharded_linear_backwards(gelu, w1, dropout_grad);
@@ -577,7 +583,8 @@ std::vector<TensorView*> mha_backwards(
     TensorView* sdpa_offset,
     TensorView* grad,
     TensorView* linear0,
-    const DeviceMesh& mesh) {
+    const DeviceMesh& mesh,
+    const double dropout_prob) {
   DataType dtype = w0->dtype();
   const auto D = w0->axis(0)->extent()->value().as<int64_t>();
   // Reform qkv from linear0 output
@@ -595,7 +602,7 @@ std::vector<TensorView*> mha_backwards(
   }
 
   // dropout backwards
-  constexpr double kScale = 1.0 / (1.0 - kDropoutProb);
+  double kScale = 1.0 / (1.0 - dropout_prob);
   auto dropout_scale = IrBuilder::create<Val>(kScale);
   TensorView* dropout_grad = dropout_backward(grad, mask, dropout_scale);
 
@@ -683,6 +690,7 @@ TEST_P(DistributedTransformerTest, MLP_Layer) {
   }
   DataType dtype = GetParam();
   at::ScalarType at_dtype = data_type_to_aten(dtype);
+  const double dropout_prob = 0.1;
   auto fusion = std::make_unique<Fusion>();
   FusionGuard fg(fusion.get());
   const auto mesh = DeviceMesh::createForNumDevices(D);
@@ -699,7 +707,7 @@ TEST_P(DistributedTransformerTest, MLP_Layer) {
   fusion->addInput(tvw1);
   fusion->addInput(tvb1);
 
-  auto tvsout = mlp(tvx, tvw0, tvb0, tvw1, tvb1, mesh);
+  auto tvsout = mlp(tvx, tvw0, tvb0, tvw1, tvb1, mesh, dropout_prob);
 
   fusion->addOutput(tvsout.linear0);
   fusion->addOutput(tvsout.gelu);
@@ -720,7 +728,7 @@ TEST_P(DistributedTransformerTest, MLP_Layer) {
   // Note: resetting the seed before reference and nvFuser
   // execution so that random vals are the same.
   at::manual_seed(getATenRandomSeed());
-  std::vector<at::Tensor> reference_outs = reference_mlp(x, w0, b0, w1, b1);
+  std::vector<at::Tensor> reference_outs = reference_mlp(x, w0, b0, w1, b1, dropout_prob);
 
   std::vector<c10::IValue> inputs = {
       x,
@@ -758,6 +766,7 @@ TEST_P(DistributedTransformerTest, Sequence_Parallel_MLP_Layer) {
   }
   DataType dtype = GetParam();
   at::ScalarType at_dtype = data_type_to_aten(dtype);
+  const double dropout_prob = 0.0;
   auto fusion = std::make_unique<Fusion>();
   FusionGuard fg(fusion.get());
   const auto mesh = DeviceMesh::createForNumDevices(D);
@@ -772,7 +781,7 @@ TEST_P(DistributedTransformerTest, Sequence_Parallel_MLP_Layer) {
   // Note only the sequence (S) dimension that is sharded
   // but to avoid DID parallelizations of inner logical axes
   // B*S is sharded.
-  auto tvsout = mlp(x, w0, b0, w1, b1, mesh, true);
+  auto tvsout = mlp(x, w0, b0, w1, b1, mesh, dropout_prob, true);
 
   fusion->addInput(x);
   fusion->addInput(w0);
@@ -801,7 +810,7 @@ TEST_P(DistributedTransformerTest, Sequence_Parallel_MLP_Layer) {
   // For validation against ATen the sharded reference dropout mask is an input
   // to the Fusion, but in regular setting it would be generated.
   std::vector<at::Tensor> reference_outs =
-      reference_mlp(x_, w0_, b0_, w1_, b1_);
+      reference_mlp(x_, w0_, b0_, w1_, b1_, dropout_prob);
   auto mask_ = reference_outs[4];
 
   std::vector<c10::IValue> inputs = {
@@ -818,7 +827,6 @@ TEST_P(DistributedTransformerTest, Sequence_Parallel_MLP_Layer) {
       shardTensor(reference_outs[3], 0, mesh)};
 
   FusionExecutorCache fec(std::move(fusion));
-  at::manual_seed(getATenRandomSeed());
   auto outputs = fec.runFusionWithInputs(inputs);
   validate(expected_outputs, outputs, {0.01, 0.01, 0.02, 0.02});
 }
@@ -833,6 +841,7 @@ TEST_P(DistributedTransformerTest, MultiheadAttention) {
   FusionGuard fg(fusion.get());
   const auto mesh = DeviceMesh::createForNumDevices(D);
   at::ScalarType at_dtype = data_type_to_aten(dtype);
+  const double dropout_prob = 0.1;
 
   TensorView* tvx = makeContigConcreteTensor({B * S, E}, dtype);
   TensorView* tvw0 = makeContigConcreteTensor({D, 3 * E / D, E}, dtype);
@@ -846,7 +855,7 @@ TEST_P(DistributedTransformerTest, MultiheadAttention) {
   fusion->addInput(tvw1);
   fusion->addInput(tvb1);
 
-  auto tv_outs = mha(tvx, tvw0, tvb0, tvw1, tvb1, mesh);
+  auto tv_outs = mha(tvx, tvw0, tvb0, tvw1, tvb1, mesh, dropout_prob);
 
   fusion->addOutput(tv_outs.linear0);
   fusion->addOutput(tv_outs.sdpa);
@@ -865,7 +874,7 @@ TEST_P(DistributedTransformerTest, MultiheadAttention) {
   auto b1 = at::randn({E}, options) * kParamScale;
 
   at::manual_seed(getATenRandomSeed());
-  auto reference_outs = reference_mha(x, w0, b0, w1, b1);
+  auto reference_outs = reference_mha(x, w0, b0, w1, b1, dropout_prob);
   std::vector<c10::IValue> inputs = {
       x,
       shardTensor(w0.view({3, E, E}), 1, mesh).view({1, 3 * E / D, E}),
@@ -895,6 +904,7 @@ TEST_P(DistributedTransformerTest, MultiheadAttention_SP) {
   FusionGuard fg(fusion.get());
   const auto mesh = DeviceMesh::createForNumDevices(D);
   at::ScalarType at_dtype = data_type_to_aten(dtype);
+  const double dropout_prob = 0.0;
 
   TensorView* tvx = makeContigConcreteTensor({D, B * S / D, E}, dtype);
   TensorView* tvw0 = makeContigConcreteTensor({D, 3 * E / D, E}, dtype);
@@ -908,7 +918,7 @@ TEST_P(DistributedTransformerTest, MultiheadAttention_SP) {
   fusion->addInput(tvw1);
   fusion->addInput(tvb1);
 
-  auto tv_outs = mha(tvx, tvw0, tvb0, tvw1, tvb1, mesh, true);
+  auto tv_outs = mha(tvx, tvw0, tvb0, tvw1, tvb1, mesh, dropout_prob, true);
 
   fusion->addOutput(tv_outs.linear0);
   fusion->addOutput(tv_outs.sdpa);
@@ -927,8 +937,7 @@ TEST_P(DistributedTransformerTest, MultiheadAttention_SP) {
   auto w1 = at::randn({E, E}, options) * kParamScale;
   auto b1 = at::randn({E}, options) * kParamScale;
 
-  at::manual_seed(getATenRandomSeed());
-  auto reference_outs = reference_mha(x, w0, b0, w1, b1);
+  auto reference_outs = reference_mha(x, w0, b0, w1, b1, dropout_prob);
   std::vector<c10::IValue> inputs = {
       shardTensor(x, 0, mesh),
       shardTensor(w0.view({3, E, E}), 1, mesh).view({1, 3 * E / D, E}),
@@ -943,7 +952,6 @@ TEST_P(DistributedTransformerTest, MultiheadAttention_SP) {
       shardTensor(reference_outs[3], 0, mesh)};
 
   FusionExecutorCache fec(std::move(fusion));
-  at::manual_seed(getATenRandomSeed());
   auto outputs = fec.runFusionWithInputs(inputs);
   validate(expected_outputs, outputs, {0.02, 0.02, 0.02, 0.02});
 }
@@ -955,6 +963,7 @@ TEST_P(DistributedTransformerTest, MLP_Backward) {
   }
   auto dtype = GetParam();
   at::ScalarType at_dtype = data_type_to_aten(dtype);
+  const double dropout_prob = 0.1;
   auto fusion = std::make_unique<Fusion>();
   FusionGuard fg(fusion.get());
   const auto mesh = DeviceMesh::createForNumDevices(D);
@@ -975,7 +984,7 @@ TEST_P(DistributedTransformerTest, MLP_Backward) {
   fusion->addInput(linear0);
 
   std::vector<TensorView*> tv_outs =
-      mlp_backwards(grad, x, mask, w0, w1, linear0, mesh);
+      mlp_backwards(grad, x, mask, w0, w1, linear0, mesh, dropout_prob);
 
   for (TensorView* tv : tv_outs) {
     fusion->addOutput(tv);
@@ -991,14 +1000,14 @@ TEST_P(DistributedTransformerTest, MLP_Backward) {
       at::TensorOptions().dtype(at_dtype).device(communicator_->device());
   auto grad_ = at::randn({B * S, E}, options).to(at::kFloat);
   auto x_ = at::randn({B * S, E}, options);
-  auto mask_ = at::rand({B * S, E}, options).lt(1.0 - kDropoutProb);
+  auto mask_ = at::rand({B * S, E}, options).lt(1.0 - dropout_prob);
   auto mlp_w0_ = at::randn({4 * E, E}, options) * kParamScale;
   auto mlp_b0_ = at::randn({4 * E}, options) * kParamScale;
   auto mlp_w1_ = at::randn({E, 4 * E}, options) * kParamScale;
 
   auto linear0_ = at::linear(x_, mlp_w0_, mlp_b0_);
   std::vector<at::Tensor> outs =
-      reference_mlp_backwards(grad_, x_, mask_, mlp_w0_, mlp_w1_, linear0_);
+      reference_mlp_backwards(grad_, x_, mask_, mlp_w0_, mlp_w1_, linear0_, dropout_prob);
 
   std::vector<c10::IValue> inputs = {
       grad_,
@@ -1029,6 +1038,7 @@ TEST_P(DistributedTransformerTest, MHA_Backward) {
   }
   auto dtype = GetParam();
   at::ScalarType at_dtype = data_type_to_aten(dtype);
+  const double dropout_prob = 0.1;
   auto fusion = std::make_unique<Fusion>();
   FusionGuard fg(fusion.get());
   const auto mesh = DeviceMesh::createForNumDevices(D);
@@ -1068,7 +1078,8 @@ TEST_P(DistributedTransformerTest, MHA_Backward) {
       tvsdpa_offset,
       tvgrad,
       linear0,
-      mesh);
+      mesh,
+      dropout_prob);
 
   for (auto tv : tvouts) {
     fusion->addOutput(tv);
@@ -1088,10 +1099,10 @@ TEST_P(DistributedTransformerTest, MHA_Backward) {
   auto b0 = at::randn({3 * E}, options) * kParamScale;
   auto w1 = at::randn({E, E}, options) * kParamScale;
   auto grad = at::randn({B * S, E}, options).to(at::kFloat);
-  auto mask = at::rand({B * S, E}, options).lt(1.0 - kDropoutProb);
+  auto mask = at::rand({B * S, E}, options).lt(1.0 - dropout_prob);
 
   at::manual_seed(getATenRandomSeed());
-  auto reference_outs = reference_mha_backwards(grad, x, mask, w0, b0, w1);
+  auto reference_outs = reference_mha_backwards(grad, x, mask, w0, b0, w1, dropout_prob);
   std::vector<c10::IValue> inputs = {
       x,
       shardTensor(w0.view({3, E, E}), 1, mesh).view({1, 3 * E / D, E}),
@@ -1131,6 +1142,7 @@ TEST_P(DistributedTransformerTest, Forward_SP) {
   }
   auto dtype = GetParam();
   at::ScalarType at_dtype = data_type_to_aten(dtype);
+  const double dropout_prob = 0.0;
   auto fusion = std::make_unique<Fusion>();
   FusionGuard fg(fusion.get());
   const auto mesh = DeviceMesh::createForNumDevices(D);
@@ -1170,11 +1182,11 @@ TEST_P(DistributedTransformerTest, Forward_SP) {
   auto ln_input = castOp(DataType::Float, x);
   auto ln0 = layer_norm(ln_input, norm_shape, ln0_w, ln0_b, eps);
   auto mha_in = castOp(dtype, ln0.output);
-  auto mha_tvs = mha(mha_in, mha_w0, mha_b0, mha_w1, mha_b1, mesh, true);
+  auto mha_tvs = mha(mha_in, mha_w0, mha_b0, mha_w1, mha_b1, mesh, dropout_prob, true);
   auto resid0 = add(ln_input, mha_tvs.output);
   auto ln1 = layer_norm(resid0, norm_shape, ln1_w, ln1_b, eps);
   auto mlp_in = castOp(dtype, ln1.output);
-  auto mlp_tvs = mlp(mlp_in, mlp_w0, mlp_b0, mlp_w1, mlp_b1, mesh, true);
+  auto mlp_tvs = mlp(mlp_in, mlp_w0, mlp_b0, mlp_w1, mlp_b1, mesh, dropout_prob, true);
   auto resid1 = add(resid0, mlp_tvs.output);
   resid1 = castOp(dtype, resid1);
 
@@ -1221,14 +1233,14 @@ TEST_P(DistributedTransformerTest, Forward_SP) {
   auto ln0_out_ = std::get<0>(ln0_);
 
   auto mha_out_ = reference_mha(
-      ln0_out_.to(at_dtype), mha_w0_, mha_b0_, mha_w1_, mha_b1_)[3];
+      ln0_out_.to(at_dtype), mha_w0_, mha_b0_, mha_w1_, mha_b1_, dropout_prob)[3];
 
   auto resid0_ = mha_out_ + x_float_;
   auto ln1_ = at::native_layer_norm(resid0_, norm_shape, ln1_w_, ln1_b_, kEps);
   auto ln1_out_ = std::get<0>(ln1_);
 
   auto mlp_out_ = reference_mlp(
-      ln1_out_.to(at_dtype), mlp_w0_, mlp_b0_, mlp_w1_, mlp_b1_)[3];
+      ln1_out_.to(at_dtype), mlp_w0_, mlp_b0_, mlp_w1_, mlp_b1_, dropout_prob)[3];
   auto at_out = (resid0_ + mlp_out_).to(at_dtype);
 
   std::vector<c10::IValue> inputs = {
@@ -1254,7 +1266,6 @@ TEST_P(DistributedTransformerTest, Forward_SP) {
       shardTensor(at_out, 0, mesh)};
 
   FusionExecutorCache fec(std::move(fusion));
-  at::manual_seed(getATenRandomSeed());
   auto outputs = fec.runFusionWithInputs(inputs);
   validate(expected_outputs, outputs, {1e-4, 0.02, 0.04, 0.04, 0.04});
 }
@@ -1266,6 +1277,7 @@ TEST_P(DistributedTransformerTest, Forward) {
   }
   auto dtype = GetParam();
   at::ScalarType at_dtype = data_type_to_aten(dtype);
+  const double dropout_prob = 0.1;
   auto fusion = std::make_unique<Fusion>();
   FusionGuard fg(fusion.get());
   const auto mesh = DeviceMesh::createForNumDevices(D);
@@ -1305,11 +1317,11 @@ TEST_P(DistributedTransformerTest, Forward) {
   auto ln_input = castOp(DataType::Float, x);
   auto ln0 = layer_norm(ln_input, norm_shape, ln0_w, ln0_b, eps);
   auto mha_in = castOp(dtype, ln0.output);
-  auto mha_out = mha(mha_in, mha_w0, mha_b0, mha_w1, mha_b1, mesh).output;
+  auto mha_out = mha(mha_in, mha_w0, mha_b0, mha_w1, mha_b1, mesh, dropout_prob).output;
   auto resid0 = add(ln_input, mha_out);
   auto ln1 = layer_norm(resid0, norm_shape, ln1_w, ln1_b, eps);
   auto mlp_in = castOp(dtype, ln1.output);
-  auto mlp_out = mlp(mlp_in, mlp_w0, mlp_b0, mlp_w1, mlp_b1, mesh).output;
+  auto mlp_out = mlp(mlp_in, mlp_w0, mlp_b0, mlp_w1, mlp_b1, mesh, dropout_prob).output;
   auto resid1 = add(resid0, mlp_out);
   resid1 = castOp(dtype, resid1);
 
@@ -1349,14 +1361,14 @@ TEST_P(DistributedTransformerTest, Forward) {
   auto ln0_out_ = std::get<0>(ln0_);
 
   auto mha_out_ = reference_mha(
-      ln0_out_.to(at_dtype), mha_w0_, mha_b0_, mha_w1_, mha_b1_)[3];
+      ln0_out_.to(at_dtype), mha_w0_, mha_b0_, mha_w1_, mha_b1_, dropout_prob)[3];
 
   auto resid0_ = mha_out_ + x_float_;
   auto ln1_ = at::native_layer_norm(resid0_, norm_shape, ln1_w_, ln1_b_, kEps);
   auto ln1_out_ = std::get<0>(ln1_);
 
   auto mlp_out_ = reference_mlp(
-      ln1_out_.to(at_dtype), mlp_w0_, mlp_b0_, mlp_w1_, mlp_b1_)[3];
+      ln1_out_.to(at_dtype), mlp_w0_, mlp_b0_, mlp_w1_, mlp_b1_, dropout_prob)[3];
   auto at_out = (resid0_ + mlp_out_).to(at_dtype);
 
   std::vector<c10::IValue> inputs = {
@@ -1390,6 +1402,7 @@ TEST_P(DistributedTransformerTest, Backward) {
   }
   auto dtype = GetParam();
   at::ScalarType at_dtype = data_type_to_aten(dtype);
+  const double dropout_prob = 0.1;
   auto fusion = std::make_unique<Fusion>();
   FusionGuard fg(fusion.get());
   const auto mesh = DeviceMesh::createForNumDevices(D);
@@ -1452,7 +1465,7 @@ TEST_P(DistributedTransformerTest, Backward) {
       ln0_in, ln0_mean, ln0_rstd, norm_shape, ln0_w, ln0_b);
   auto mha_in = castOp(dtype, ln0);
 
-  Val* dropout_scale = IrBuilder::create<Val>(1.0 / (1.0 - kDropoutProb));
+  Val* dropout_scale = IrBuilder::create<Val>(1.0 / (1.0 - dropout_prob));
   // Use input mha_mask to implement dropout
   auto mha_out = mul(mha_linear1, mha_mask);
   mha_out = mul(mha_out, dropout_scale);
@@ -1464,7 +1477,7 @@ TEST_P(DistributedTransformerTest, Backward) {
   // Backwards
   auto grad_float = castOp(DataType::Float, grad);
   auto mlp_grads = mlp_backwards(
-      grad_float, mlp_in, mlp_mask, mlp_w0, mlp_w1, mlp_linear0, mesh);
+      grad_float, mlp_in, mlp_mask, mlp_w0, mlp_w1, mlp_linear0, mesh, dropout_prob);
   auto ln1_grads = layer_norm_backward(
       castOp(DataType::Float, mlp_grads[6]),
       resid0,
@@ -1486,7 +1499,8 @@ TEST_P(DistributedTransformerTest, Backward) {
       mha_sdpa_offset,
       resid1_grad,
       mha_linear0,
-      mesh);
+      mesh,
+      dropout_prob);
   auto ln0_grads = layer_norm_backward(
       castOp(DataType::Float, mha_grads[8]),
       ln0_in,
@@ -1584,16 +1598,16 @@ TEST_P(DistributedTransformerTest, Backward) {
   auto [ln0_, ln0_mean_, ln0_rstd_] = at::native_layer_norm(
       x_.to(at::kFloat), norm_shape, ln0_w_, ln0_b_, kEps);
   auto mha_in_ = ln0_.to(at_dtype);
-  auto mha_out_ = reference_mha(mha_in_, mha_w0_, mha_b0_, mha_w1_, mha_b1_);
+  auto mha_out_ = reference_mha(mha_in_, mha_w0_, mha_b0_, mha_w1_, mha_b1_, dropout_prob);
   auto resid0_ = mha_out_[3] + x_.to(at::kFloat);
   auto [ln1_, ln1_mean_, ln1_rstd_] =
       at::native_layer_norm(resid0_, norm_shape, ln1_w_, ln1_b_, kEps);
   auto mlp_in_ = ln1_.to(at_dtype);
-  auto mlp_out_ = reference_mlp(mlp_in_, mlp_w0_, mlp_b0_, mlp_w1_, mlp_b1_);
+  auto mlp_out_ = reference_mlp(mlp_in_, mlp_w0_, mlp_b0_, mlp_w1_, mlp_b1_, dropout_prob);
 
   // Backwards pass
   auto mlp_grads_ = reference_mlp_backwards(
-      grad_, mlp_in_, mlp_out_[4], mlp_w0_, mlp_w1_, mlp_out_[0]);
+      grad_, mlp_in_, mlp_out_[4], mlp_w0_, mlp_w1_, mlp_out_[0], dropout_prob);
   auto [ln1_x_grad_, ln1_w_grad_, ln1_b_grad_] = at::native_layer_norm_backward(
       mlp_grads_[6].to(at::kFloat),
       resid0_,
@@ -1605,7 +1619,7 @@ TEST_P(DistributedTransformerTest, Backward) {
       {true, true, true});
   auto resid1_grad_ = ln1_x_grad_ + grad_.to(at::kFloat);
   auto mha_grads_ = reference_mha_backwards(
-      resid1_grad_, mha_in_, mha_out_[4], mha_w0_, mha_b0_, mha_w1_);
+      resid1_grad_, mha_in_, mha_out_[4], mha_w0_, mha_b0_, mha_w1_, dropout_prob);
   auto [ln0_x_grad_, ln0_w_grad_, ln0_b_grad_] = at::native_layer_norm_backward(
       mha_grads_[12].to(at::kFloat),
       x_.to(at::kFloat),
