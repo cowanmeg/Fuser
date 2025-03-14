@@ -25,6 +25,7 @@ Statement* IrCloner::clone(const Statement* statement) {
   if (it != clones_map_.end()) {
     return it->second;
   } else {
+    std::cout << "IrCloner::clone new node " << statement << std::endl;
     auto new_node = handle(statement);
 
     // The base cloning constructor (Statement) should have
@@ -44,6 +45,7 @@ void IrCloner::registerClone(const Statement* src, Statement* clone) {
 }
 
 Statement* IrCloner::handle(const Statement* s) {
+  std::cout << "IrCloner::handle " << s << std::endl;
   return s->clone(this);
 }
 

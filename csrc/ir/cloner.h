@@ -171,6 +171,7 @@ class RecomputeTv : private IrCloner {
 //! Clone an IR node, forwarding the arguments to the IrCloner constructor.
 template <class T>
 T* IrBuilder::clone(const T* src, IrCloner* ir_cloner) {
+  std::cout << "IrBuilder::clone " << src << std::endl;
   NVF_ERROR(
       ir_cloner != nullptr,
       "Cannot use create when a cloner object is set. Use clone.");
@@ -180,6 +181,8 @@ T* IrBuilder::clone(const T* src, IrCloner* ir_cloner) {
       "Cloner doesn't have a valid container to store cloned object.");
 
   T* dest = new T(src, ir_cloner);
+  std::cout << "  IrBuilder::clone src: " << src << " to dest: " << dest << std::endl;
+  printf("  src %p, dest %p\n", src, dest);
   const Statement* src_stmt = dynamic_cast<const Statement*>(src);
   Statement* dest_stmt = dynamic_cast<Statement*>(dest);
 
@@ -194,6 +197,7 @@ T* IrBuilder::clone(const T* src, IrCloner* ir_cloner) {
 
   ir_cloner->registerClone(src_stmt, dest_stmt);
 
+  printf("  Registering clone %p\n", dest);
   return dest;
 }
 

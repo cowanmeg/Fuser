@@ -49,6 +49,7 @@ std::unique_ptr<SegmentedFusion> Fusion::segment(
 }
 
 IrCloner Fusion::copy(const Fusion* from, Fusion* to) {
+  printf("Copying from Fusion %p to %p\n", from, to);
   to->clear();
   auto ir_cloner = IrContainer::copy(from, to);
 

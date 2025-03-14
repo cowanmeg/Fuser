@@ -122,7 +122,10 @@ TensorView::TensorView(const TensorView* src, IrCloner* ir_cloner)
       compute_with_pos_(src->compute_with_pos_),
       promote_reuse_(src->promote_reuse_),
       mesh_(src->mesh_),
-      tmem_dim_sep_pos_(src->tmem_dim_sep_pos_) {}
+      tmem_dim_sep_pos_(src->tmem_dim_sep_pos_) {
+        std::cout << "Created a new TV via IRCloner from " << src;
+        printf(" src: %p, dest: %p \n", src, this);
+      }
 
 void TensorView::printTransforms() const {
   IrTransformPrinter(std::cout).printTransforms(this);
