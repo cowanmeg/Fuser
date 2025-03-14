@@ -2888,6 +2888,7 @@ bool TranslateApplicableWelford::wouldTranslateToPersistent(
 
   // Make initial `in-progress copy`
   auto test_copy = std::make_unique<Fusion>();
+  printf("Welford::wouldTranslateToPersistent %p->%p\n", fusion, test_copy.get());
   auto original_to_test_map = Fusion::copy(fusion, test_copy.get());
 
   std::vector<WelfordOp*> copied_welfords;
@@ -2958,11 +2959,14 @@ bool TranslateApplicableWelford::wouldTranslateToPersistent(
         test_copy.get(), test_group_inputs_, test_group_outputs_);
 
     // Test if the translated copy is persistent
+    printf("Completed If Welford::wouldTranslateToPersistent %p->%p\n", fusion, test_copy.get());
     return isValidPersistentFusion(test_copy.get(), runtime_info);
   }
   // In the case where we work on un-segmented
   //  fusion, no group boundary logic, just
   //  translate and test.
+
+  printf("Completed Else Welford::wouldTranslateToPersistent %p->%p\n", fusion, test_copy.get());
   return isValidPersistentFusion(test_copy.get(), runtime_info);
 }
 

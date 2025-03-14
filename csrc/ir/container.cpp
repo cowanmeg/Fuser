@@ -52,6 +52,8 @@ IrCloner IrContainer::copy(const IrContainer* from, IrContainer* to) {
   to->clear();
   IrCloner ir_cloner(to);
 
+  printf("IrContainer::copy %p->%p\n", from, to);
+
   // Copy values in deterministic order
   // deterministic_vals can contain special values like one_val_, zero_val_, etc
   // that are not registered in the container.
@@ -80,6 +82,7 @@ IrCloner IrContainer::copy(const IrContainer* from, IrContainer* to) {
 
   to->metadata_ = ir_cloner.clone(from->metadata_);
 
+  printf("IrContainer::copy DONE %p->%p\n", from, to);
   return ir_cloner;
 }
 

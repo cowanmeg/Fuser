@@ -58,7 +58,9 @@ IrCloner Fusion::copy(const Fusion* from, Fusion* to) {
     ir_cloner.clone(val)->setUses(ir_cloner.clone(val->uses_));
   }
 
+  std::cout << "Clone from from->inputs " << std::endl;
   to->inputs_ = ir_cloner.clone(from->inputs_);
+  std::cout << "Clone from from->outputs " << std::endl;
   to->outputs_ = ir_cloner.clone(from->outputs_);
   for (auto inp : to->inputs_) {
     inp->setIsFusionInput(true);
@@ -68,8 +70,11 @@ IrCloner Fusion::copy(const Fusion* from, Fusion* to) {
   }
 
   // TODO: put this into ir_cloner instead
+  std::cout << "Right before the output and alias cloning" << std::endl;
   for (const auto& [output, alias_info] : from->io_alias_) {
+    printf("Cloning output %p\n", output);
     Val* copied_output = ir_cloner.clone(output);
+    printf("Cloning alias_info %p\n", alias_info.aliased_io);
     Val* copied_input = ir_cloner.clone(alias_info.aliased_io);
     to->io_alias_[copied_output] = {
         .type = alias_info.type,
@@ -81,6 +86,7 @@ IrCloner Fusion::copy(const Fusion* from, Fusion* to) {
   // This should never be true on copy, but copying for completeness.
   to->is_during_update_uses_ = from->is_during_update_uses_;
 
+  std::cout << "Here at 89" << std::endl;
   for (const auto& i : from->managed_data_) {
     if (i.first.has_value()) {
       to->managed_data_.emplace_back(i.second(ir_cloner, i.first), i.second);
@@ -90,23 +96,30 @@ IrCloner Fusion::copy(const Fusion* from, Fusion* to) {
     }
   }
 
+  std::cout << "Here at 99" << std::endl;
   for (auto [k, v] : from->managed_named_data_) {
     if (v.first.has_value()) {
-      to->managed_named_data_.insert(std::make_pair(
-          k, std::make_pair(v.second(ir_cloner, v.first), v.second)));
+      std::cout << "Key " << k << std::endl;
+      // printf("Value pointer %p\n", v.first);
+      auto gg = std::make_pair(
+        k, std::make_pair(v.second(ir_cloner, v.first), v.second));
+      std::cout << "Made the pair " << std::endl;
+      to->managed_named_data_.insert(gg);
     }
   }
-
+  std::cout << "Here at 107" << std::endl;
   to->expected_dynamic_smem_bytes_ = from->expected_dynamic_smem_bytes_;
 
+  std::cout << "Here at 108" << std::endl;
   if (from->all_tvs_ptr_ != nullptr) {
     to->all_tvs_ptr_ = std::make_unique<std::vector<TensorView*>>();
     to->all_tvs_ptr_->reserve(from->all_tvs_ptr_->size());
     for (TensorView* from_tv : *from->all_tvs_ptr_) {
+      printf("  Fusion::copy copy TV from_tv %p\n", from_tv);
       to->all_tvs_ptr_->push_back(ir_cloner.clone(from_tv)->as<TensorView>());
     }
   }
-
+  printf("Done from Fusion %p to %p\n", from, to);
   return ir_cloner;
 }
 

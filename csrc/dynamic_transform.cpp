@@ -27,16 +27,22 @@ namespace nvfuser {
 
 DynamicTransformInitialInfo DynamicTransformInitialInfo::clone(
     IrCloner& ir_cloner) const {
+  std::cout << "In this function DynamicTransformInitialInfo::clone" << std::endl;
   DynamicTransformInitialInfo cloned_info(
       static_cast<Fusion*>(ir_cloner.container()));
   cloned_info.dynamic_reshaped_tvs_.reserve(dynamic_reshaped_tvs_.size());
+  std::cout << "Done with cloning info " << std::endl;
   for (const auto tv : dynamic_reshaped_tvs_) {
+    printf("Cloning %p\n", tv); // Offending tv pointer
     cloned_info.dynamic_reshaped_tvs_.push_back(ir_cloner.clone(tv));
   }
+  std::cout << "Done with dynamic reshaped tvs " << std::endl;
+
   cloned_info.dynamic_resized_ids_.reserve(dynamic_resized_ids_.size());
   for (const auto id : dynamic_resized_ids_) {
     cloned_info.dynamic_resized_ids_.push_back(ir_cloner.clone(id));
   }
+
   cloned_info.dynamic_expanded_tvs_.reserve(dynamic_expanded_tvs_.size());
   for (const auto tv : dynamic_expanded_tvs_) {
     cloned_info.dynamic_expanded_tvs_.push_back(ir_cloner.clone(tv));
@@ -45,10 +51,12 @@ DynamicTransformInitialInfo DynamicTransformInitialInfo::clone(
   for (const auto v : dynamic_factory_tvs_) {
     cloned_info.dynamic_factory_tvs_.push_back(ir_cloner.clone(v));
   }
+
   cloned_info.maybe_zero_extents_set_.reserve(maybe_zero_extents_set_.size());
   for (const auto v : maybe_zero_extents_set_) {
     cloned_info.maybe_zero_extents_set_.insert(ir_cloner.clone(v));
   }
+
   cloned_info.maybe_zero_extents_.reserve(maybe_zero_extents_.size());
   for (const auto v : maybe_zero_extents_) {
     cloned_info.maybe_zero_extents_.push_back(ir_cloner.clone(v));
